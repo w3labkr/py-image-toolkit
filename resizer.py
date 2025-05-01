@@ -28,7 +28,7 @@ from PIL import Image, UnidentifiedImageError
 import piexif # EXIF 처리
 
 # --- 상수 정의 ---
-SCRIPT_VERSION = "1.6" # 버전 업데이트 (short 커맨드 추가)
+SCRIPT_VERSION = "1.8" # 버전 업데이트 (위치 인수 입력)
 
 # Pillow 버전 호환성을 위한 리샘플링 필터 정의
 try:
@@ -275,7 +275,7 @@ def process_images(input_folder, output_folder, resize_options, output_format_op
                 img_prepared = prepare_image_for_save(img, save_format_upper)
 
                 # 리사이즈
-                resample_filter = resize_options['filter_obj'] # 실제 Pillow 필터 객체 사용
+                resample_filter = resize_options.get('filter_obj') # mode 'none'일 때 키가 없을 수 있으므로 .get 사용
                 img_resized = img_prepared # 리사이즈 안 할 수도 있으므로 초기화
                 if resize_options['mode'] == 'aspect_ratio':
                     img_resized = resize_image_maintain_aspect_ratio(
@@ -403,14 +403,17 @@ def process_images(input_folder, output_folder, resize_options, output_format_op
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description=f"이미지 크기 일괄 변경 스크립트 (v{SCRIPT_VERSION})",
-        formatter_class=argparse.RawTextHelpFormatter # help 메시지 줄바꿈 유지
+        formatter_class=argparse.RawTextHelpFormatter, # help 메시지 줄바꿈 유지
+        usage="%(prog)s [input_directory] -m <mode> -O <format> [options]" # 사용법 예시 변경
     )
 
     # --- 인수 정의 ---
-    # 필수 그룹
-    required_group = parser.add_argument_group('필수 인자')
-    required_group.add_argument("-i", "--input-dir", required=True,
-                                help="이미지가 있는 원본 폴더 경로")
+    # 위치 인수 (입력 폴더)
+    parser.add_argument("input_directory", nargs='?', default='.',
+                        help="이미지가 있는 원본 폴더 경로 (기본값: 현재 디렉토리)")
+
+    # 필수 옵션 그룹
+    required_group = parser.add_argument_group('필수 옵션')
     required_group.add_argument("-m", "--resize-mode", required=True, choices=['aspect_ratio', 'fixed', 'none'],
                                 help="리사이즈 방식:\n"
                                      "  aspect_ratio: 가로세로 비율 유지 (최대 너비/높이 내 맞춤)\n"
@@ -420,8 +423,13 @@ if __name__ == "__main__":
                                 help="저장할 파일 형식:\n" +
                                      "\n".join([f"  {k}: {v}" for k, v in SUPPORTED_OUTPUT_FORMATS.items()]))
 
+    # 출력 경로 옵션
+    parser.add_argument("-o", "--output-dir",
+                        help="결과 저장 폴더 경로 (기본값: 입력 폴더 하위의 'resized_images')")
+
+
     # 리사이즈 관련 그룹 (mode가 none이 아닐 때 필요)
-    resize_group = parser.add_argument_group('리사이즈 관련 인자 (mode가 none이 아닐 때)')
+    resize_group = parser.add_argument_group('리사이즈 관련 옵션 (mode가 none이 아닐 때)')
     resize_group.add_argument("-w", "--width", type=int, default=0, # 기본값을 0으로 하여 mode=none일 때 무시 가능하게 함
                               help="리사이즈 너비 (px). mode가 'aspect_ratio' 또는 'fixed'일 때 필수.")
     resize_group.add_argument("-H", "--height", type=int, default=0,
@@ -431,10 +439,8 @@ if __name__ == "__main__":
                                    "\n".join([f"  {k}: {v}" for k, v in FILTER_NAMES.items()]) +
                                    "\n(mode가 'aspect_ratio' 또는 'fixed'일 때 필수)")
 
-    # 선택 그룹
-    optional_group = parser.add_argument_group('선택 인자')
-    optional_group.add_argument("-o", "--output-dir",
-                                help="결과 저장 폴더 경로 (기본값: 입력 폴더 하위의 'resized_images')")
+    # 기타 선택 옵션 그룹
+    optional_group = parser.add_argument_group('기타 선택 옵션')
     optional_group.add_argument("-r", "--recursive", action="store_true",
                                 help="하위 폴더의 이미지도 포함하여 처리")
     optional_group.add_argument("-q", "--quality", type=int, default=None,
@@ -448,10 +454,10 @@ if __name__ == "__main__":
 
     # --- 인자 값 검증 및 설정 ---
 
-    # 입력 폴더 검증
-    if not os.path.isdir(args.input_dir):
-        parser.error(f"입력 폴더 경로가 유효하지 않습니다: {args.input_dir}")
-    absolute_input_dir = os.path.abspath(args.input_dir)
+    # 입력 폴더 검증 (위치 인수 사용)
+    if not os.path.isdir(args.input_directory):
+        parser.error(f"입력 폴더 경로가 유효하지 않습니다: {args.input_directory}")
+    absolute_input_dir = os.path.abspath(args.input_directory)
 
     # 리사이즈 모드에 따른 필수 인자 검증
     if args.resize_mode in ['aspect_ratio', 'fixed']:
@@ -477,14 +483,20 @@ if __name__ == "__main__":
     if args.output_dir:
         absolute_output_dir = os.path.abspath(args.output_dir)
     else:
+        # 입력 폴더 경로(절대 경로)를 기준으로 출력 폴더 이름 생성
         absolute_output_dir = os.path.join(absolute_input_dir, "resized_images")
         print(f"   -> 정보: 출력 폴더를 기본값으로 설정합니다: '{absolute_output_dir}'")
 
     # 입력/출력 폴더 충돌 검증
     if absolute_input_dir == absolute_output_dir:
         parser.error("입력 폴더와 출력 폴더는 동일할 수 없습니다.")
-    if args.recursive and absolute_output_dir.startswith(absolute_input_dir + os.sep):
-         parser.error("하위 폴더 포함(--recursive) 처리 시, 출력 폴더는 입력 폴더 내부에 지정할 수 없습니다.")
+    # recursive 옵션과 출력 폴더가 입력 폴더 내부에 있는지 검사 강화
+    try:
+        common_path = os.path.commonpath([absolute_input_dir, absolute_output_dir])
+        if args.recursive and common_path == absolute_input_dir and absolute_output_dir != absolute_input_dir:
+            parser.error("하위 폴더 포함(--recursive) 처리 시, 출력 폴더는 입력 폴더 내부에 지정할 수 없습니다.")
+    except ValueError: # 드라이브가 다른 경우 등 commonpath 계산 불가 시
+        pass # 이 경우는 충돌 아님
 
     # 출력 폴더 생성 (미리 생성)
     try:
