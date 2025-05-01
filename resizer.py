@@ -28,7 +28,7 @@ from PIL import Image, UnidentifiedImageError
 import piexif # EXIF 처리
 
 # --- 상수 정의 ---
-SCRIPT_VERSION = "1.8" # 버전 업데이트 (위치 인수 입력)
+SCRIPT_VERSION = "1.9" # 버전 업데이트 (비율 유지 시 단일 축 입력)
 
 # Pillow 버전 호환성을 위한 리샘플링 필터 정의
 try:
@@ -71,20 +71,44 @@ SUPPORTED_OUTPUT_FORMATS = {
 # 지원하는 입력 이미지 확장자
 SUPPORTED_INPUT_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')
 
-# --- 이미지 처리 핵심 함수 (이전과 동일) ---
+# --- 이미지 처리 핵심 함수 수정 ---
 
-def resize_image_maintain_aspect_ratio(img, max_width, max_height, resample_filter):
-    """ 가로세로 비율을 유지하며 이미지 크기를 조절합니다. """
+def resize_image_maintain_aspect_ratio(img, target_width, target_height, resample_filter):
+    """
+    가로세로 비율을 유지하며 이미지 크기를 조절합니다.
+    target_width 또는 target_height 중 하나만 제공되어도 나머지를 계산합니다.
+    """
     original_width, original_height = img.size
-    if original_width <= 0 or original_height <= 0: return img # 너비 또는 높이가 0 이하인 경우 처리 방지
-    ratio = min(max_width / original_width, max_height / original_height)
-    # 크기가 커지는 것을 방지하려면 ratio > 1 인 경우 1로 설정
-    # ratio = min(ratio, 1.0) # 필요하다면 이 주석 해제 (원본보다 크게 만들지 않음)
-    new_width = max(1, int(original_width * ratio))
-    new_height = max(1, int(original_height * ratio))
+    if original_width <= 0 or original_height <= 0: return img # 유효하지 않은 원본 크기
+
+    new_width = 0
+    new_height = 0
+
+    if target_width > 0 and target_height > 0:
+        # 너비와 높이가 모두 지정된 경우: 지정된 최대 크기 내에서 비율 유지 (기존 로직)
+        ratio = min(target_width / original_width, target_height / original_height)
+        new_width = max(1, int(original_width * ratio))
+        new_height = max(1, int(original_height * ratio))
+    elif target_width > 0:
+        # 너비만 지정된 경우: 너비를 기준으로 높이 계산
+        ratio = target_width / original_width
+        new_width = target_width
+        new_height = max(1, int(original_height * ratio))
+    elif target_height > 0:
+        # 높이만 지정된 경우: 높이를 기준으로 너비 계산
+        ratio = target_height / original_height
+        new_height = target_height
+        new_width = max(1, int(original_width * ratio))
+    else:
+        # 너비와 높이 모두 지정되지 않은 경우 (오류 상황이지만 방어 코드)
+        print("   -> 경고: 비율 유지 리사이즈 시 너비 또는 높이 중 하나는 지정해야 합니다. 원본 이미지를 사용합니다.")
+        return img
+
     # 크기 변경이 없는 경우 원본 반환
     if (new_width, new_height) == (original_width, original_height): return img
+
     try:
+        print(f"   -> 정보: 비율 유지 리사이즈 ({original_width}x{original_height}) -> ({new_width}x{new_height})")
         return img.resize((new_width, new_height), resample_filter)
     except ValueError as e:
         print(f"   -> 경고: 리사이즈 중 오류 발생 (({original_width},{original_height}) -> ({new_width},{new_height})): {e}. 원본 이미지를 사용합니다.")
@@ -98,6 +122,7 @@ def resize_image_fixed_size(img, target_width, target_height, resample_filter):
         print(f"   -> 경고: 유효하지 않은 고정 크기 ({target_width}x{target_height})가 지정되었습니다. 원본 이미지를 사용합니다.")
         return img
     try:
+        print(f"   -> 정보: 고정 크기 리사이즈 ({original_width}x{original_height}) -> ({target_width}x{target_height})")
         return img.resize((target_width, target_height), resample_filter)
     except ValueError as e:
         print(f"   -> 경고: 리사이즈 중 오류 발생 (({original_width},{original_height}) -> ({target_width},{target_height})): {e}. 원본 이미지를 사용합니다.")
@@ -416,7 +441,7 @@ if __name__ == "__main__":
     required_group = parser.add_argument_group('필수 옵션')
     required_group.add_argument("-m", "--resize-mode", required=True, choices=['aspect_ratio', 'fixed', 'none'],
                                 help="리사이즈 방식:\n"
-                                     "  aspect_ratio: 가로세로 비율 유지 (최대 너비/높이 내 맞춤)\n"
+                                     "  aspect_ratio: 가로세로 비율 유지 (너비/높이 중 하나만 지정)\n" # 도움말 수정
                                      "  fixed: 지정된 크기로 강제 변경 (비율 왜곡 가능)\n"
                                      "  none: 리사이즈 안 함 (포맷 변경, EXIF 처리 등만 수행)")
     required_group.add_argument("-O", "--output-format", required=True, choices=SUPPORTED_OUTPUT_FORMATS.keys(),
@@ -430,10 +455,14 @@ if __name__ == "__main__":
 
     # 리사이즈 관련 그룹 (mode가 none이 아닐 때 필요)
     resize_group = parser.add_argument_group('리사이즈 관련 옵션 (mode가 none이 아닐 때)')
-    resize_group.add_argument("-w", "--width", type=int, default=0, # 기본값을 0으로 하여 mode=none일 때 무시 가능하게 함
-                              help="리사이즈 너비 (px). mode가 'aspect_ratio' 또는 'fixed'일 때 필수.")
+    resize_group.add_argument("-w", "--width", type=int, default=0,
+                              help="리사이즈 너비 (px).\n"
+                                   "mode='aspect_ratio'일 때 너비/높이 중 하나 필수.\n" # 도움말 수정
+                                   "mode='fixed'일 때 필수.")
     resize_group.add_argument("-H", "--height", type=int, default=0,
-                              help="리사이즈 높이 (px). mode가 'aspect_ratio' 또는 'fixed'일 때 필수.")
+                              help="리사이즈 높이 (px).\n"
+                                   "mode='aspect_ratio'일 때 너비/높이 중 하나 필수.\n" # 도움말 수정
+                                   "mode='fixed'일 때 필수.")
     resize_group.add_argument("-f", "--filter", choices=FILTER_NAMES.keys(), default=None,
                               help="리사이즈 필터(품질/속도):\n" +
                                    "\n".join([f"  {k}: {v}" for k, v in FILTER_NAMES.items()]) +
@@ -459,25 +488,39 @@ if __name__ == "__main__":
         parser.error(f"입력 폴더 경로가 유효하지 않습니다: {args.input_directory}")
     absolute_input_dir = os.path.abspath(args.input_directory)
 
-    # 리사이즈 모드에 따른 필수 인자 검증
-    if args.resize_mode in ['aspect_ratio', 'fixed']:
-        if args.width <= 0 or args.height <= 0:
-            parser.error(f"--resize-mode가 '{args.resize_mode}'일 때는 --width (-w) 와 --height (-H)에 0보다 큰 정수를 지정해야 합니다.")
+    # 리사이즈 모드에 따른 필수 인자 검증 및 설정
+    resize_opts = {'mode': args.resize_mode}
+    if args.resize_mode == 'aspect_ratio':
+        # 너비 또는 높이 중 하나는 반드시 0보다 커야 함
+        if args.width <= 0 and args.height <= 0:
+            parser.error("--resize-mode가 'aspect_ratio'일 때는 --width (-w) 또는 --height (-H) 중 하나는 0보다 큰 정수로 지정해야 합니다.")
+        # 너비와 높이 모두 음수/0이 아닌지 확인 (음수 입력 방지)
+        if args.width < 0 or args.height < 0:
+             parser.error("--width (-w) 와 --height (-H)는 음수일 수 없습니다.")
         if not args.filter:
-            parser.error(f"--resize-mode가 '{args.resize_mode}'일 때는 --filter (-f)를 지정해야 합니다.")
-        # 리사이즈 옵션 설정
-        resize_opts = {
-            'mode': args.resize_mode,
+            parser.error("--resize-mode가 'aspect_ratio'일 때는 --filter (-f)를 지정해야 합니다.")
+        resize_opts.update({
             'width': args.width,
             'height': args.height,
             'filter_str': args.filter,
             'filter_obj': RESAMPLE_FILTERS[args.filter]
-        }
+        })
+    elif args.resize_mode == 'fixed':
+        # 너비와 높이 모두 0보다 커야 함
+        if args.width <= 0 or args.height <= 0:
+            parser.error("--resize-mode가 'fixed'일 때는 --width (-w) 와 --height (-H) 모두 0보다 큰 정수로 지정해야 합니다.")
+        if not args.filter:
+            parser.error("--resize-mode가 'fixed'일 때는 --filter (-f)를 지정해야 합니다.")
+        resize_opts.update({
+            'width': args.width,
+            'height': args.height,
+            'filter_str': args.filter,
+            'filter_obj': RESAMPLE_FILTERS[args.filter]
+        })
     else: # args.resize_mode == 'none'
         if args.width > 0 or args.height > 0 or args.filter:
              print("   -> 정보: --resize-mode가 'none'이므로 --width, --height, --filter 설정은 무시됩니다.")
-        resize_opts = {'mode': 'none'} # 리사이즈 안 함을 명시
-
+        # resize_opts = {'mode': 'none'} 는 이미 위에서 설정됨
 
     # 출력 폴더 설정 및 검증
     if args.output_dir:
@@ -527,7 +570,16 @@ if __name__ == "__main__":
     print(f"하위 폴더 포함: {'예' if args.recursive else '아니오'}")
     print(f"리사이즈 방식: {args.resize_mode}")
     if args.resize_mode != 'none':
-        print(f"  크기 설정: {resize_opts['width']}x{resize_opts['height']} px")
+        # aspect_ratio 모드일 때 입력된 값만 표시하도록 수정
+        size_info = []
+        if resize_opts.get('width', 0) > 0:
+            size_info.append(f"너비={resize_opts['width']}px")
+        if resize_opts.get('height', 0) > 0:
+            size_info.append(f"높이={resize_opts['height']}px")
+        if args.resize_mode == 'aspect_ratio':
+             print(f"  기준 크기: {' 또는 '.join(size_info)} (비율 유지)")
+        else: # fixed mode
+             print(f"  고정 크기: {resize_opts['width']}x{resize_opts['height']} px")
         print(f"  리사이즈 필터: {FILTER_NAMES[resize_opts['filter_str']]}")
     print(f"출력 형식: {SUPPORTED_OUTPUT_FORMATS[output_format_opts['format_str']]}")
     if 'quality' in output_format_opts: print(f"  품질: {output_format_opts['quality']}")
@@ -574,3 +626,4 @@ if __name__ == "__main__":
     # 오류가 있었다면 0이 아닌 코드로 종료
     if error_count > 0:
         sys.exit(1)
+
