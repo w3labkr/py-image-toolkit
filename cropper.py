@@ -18,7 +18,7 @@ DNN 모델(YuNet)을 사용하여 얼굴 및 랜드마크를 감지합니다.
 필요한 라이브러리:
 pip install opencv-python numpy Pillow tqdm
 
-버전: 1.6.1 (단축 인수 추가)
+버전: 1.6.2 (ImportError 수정)
 """
 import cv2
 import numpy as np
@@ -30,7 +30,8 @@ import logging
 import time
 import json # 설정 파일 처리를 위해 추가
 import concurrent.futures
-from PIL import Image, UnidentifiedImageError, Exif
+# 'Exif' 임포트 제거
+from PIL import Image, UnidentifiedImageError
 from typing import Tuple, List, Optional, Dict, Any, Union
 
 # tqdm import 시도
@@ -43,7 +44,7 @@ except ImportError:
         logging.info("tqdm 라이브러리가 설치되지 않아 진행 표시줄을 생략합니다. (pip install tqdm)")
         return iterable
 
-__version__ = "1.6.1" # 버전 업데이트
+__version__ = "1.6.2" # 버전 업데이트
 
 # --- 기본 설정값 ---
 DEFAULT_CONFIG = {
@@ -138,7 +139,6 @@ def load_config(config_path: str) -> Dict[str, Any]:
         return {}
 
 # --- 핵심 로직 함수 ---
-# (detect_faces_dnn, select_main_subject, get_rule_points, calculate_optimal_crop, apply_padding 함수는 이전 버전과 동일)
 def detect_faces_dnn(detector: cv2.FaceDetectorYN, image: np.ndarray, min_w: int, min_h: int) -> List[Dict[str, Any]]:
     """
     사전 로드된 DNN 모델(YuNet)을 사용하여 얼굴 목록을 감지합니다.
@@ -155,50 +155,34 @@ def detect_faces_dnn(detector: cv2.FaceDetectorYN, image: np.ndarray, min_w: int
         return []
 
     try:
-        # 입력 크기 설정 (이미지 크기와 동일하게)
         detector.setInputSize((img_w, img_h))
-        # 얼굴 감지 수행
         faces = detector.detect(image)
 
-        # 감지된 얼굴 정보 처리
         if faces[1] is not None:
             for idx, face_info in enumerate(faces[1]):
-                # 얼굴 경계 상자 좌표 (정수형 변환)
                 x, y, w, h = map(int, face_info[:4])
-
-                # --- 최소 얼굴 크기 필터링 ---
                 if w < min_w or h < min_h:
                     logging.debug(f"얼굴 ID {idx} ({w}x{h})가 최소 크기({min_w}x{min_h})보다 작아 무시합니다.")
                     continue
-                # --- 필터링 끝 ---
 
-                # 눈 랜드마크 좌표
                 r_eye_x, r_eye_y = face_info[4:6]
                 l_eye_x, l_eye_y = face_info[6:8]
-                # 신뢰도 점수
                 confidence = face_info[14]
 
-                # 경계 상자 좌표 보정 (이미지 경계 내)
                 x = max(0, x); y = max(0, y)
-                w = min(img_w - x, w); h = min(img_h - y, h) # 보정된 w, h 사용
+                w = min(img_w - x, w); h = min(img_h - y, h)
 
-                # 유효한 경계 상자인 경우 처리 (보정 후에도 크기가 유효한지 확인)
                 if w > 0 and h > 0:
-                    # 경계 상자 중심 계산
                     bbox_center = (x + w // 2, y + h // 2)
-                    eye_center = bbox_center # 기본값은 bbox 중심
-
-                    # 눈 랜드마크가 유효한 경우 눈 중심 계산
+                    eye_center = bbox_center
                     if r_eye_x > 0 and r_eye_y > 0 and l_eye_x > 0 and l_eye_y > 0:
                         ecx = int(round((r_eye_x + l_eye_x) / 2))
                         ecy = int(round((r_eye_y + l_eye_y) / 2))
-                        # 눈 중심 좌표 보정 (이미지 경계 내)
                         ecx = max(0, min(img_w - 1, ecx)); ecy = max(0, min(img_h - 1, ecy))
                         eye_center = (ecx, ecy)
                     else:
                         logging.debug(f"얼굴 ID {idx}의 눈 랜드마크가 유효하지 않아 BBox 중심을 사용합니다.")
 
-                    # 감지된 피사체 정보 추가
                     detected_subjects.append({
                         'bbox': (x, y, w, h),
                         'bbox_center': bbox_center,
@@ -206,84 +190,62 @@ def detect_faces_dnn(detector: cv2.FaceDetectorYN, image: np.ndarray, min_w: int
                         'confidence': confidence
                     })
     except cv2.error as e:
-        # 얼굴 감지 중 OpenCV 관련 오류 발생 시 로깅
         logging.error(f"OpenCV 오류 발생 (얼굴 감지 중): {e}")
     except Exception as e:
-        # 그 외 예상치 못한 오류 발생 시 로깅
         logging.error(f"DNN 얼굴 감지 중 예상치 못한 문제 발생: {e}")
-    # 감지된 얼굴 목록 반환
     return detected_subjects
 
 
 def select_main_subject(subjects: List[Dict[str, Any]], img_shape: Tuple[int, int],
                         method: str = 'largest', reference_point_type: str = 'eye') -> Optional[Tuple[Tuple[int, int, int, int], Tuple[int, int]]]:
     """감지된 피사체 목록에서 주 피사체를 선택하고 기준점을 반환합니다."""
-    # 피사체 목록이 비어있으면 None 반환
     if not subjects:
         logging.debug("주 피사체 선택: 감지된 피사체가 없습니다.")
         return None
 
-    img_h, img_w = img_shape # 이미지 크기
-    best_subject = None # 최적 피사체 초기화
+    img_h, img_w = img_shape
+    best_subject = None
 
     try:
-        # 피사체가 하나면 바로 선택
         if len(subjects) == 1:
             best_subject = subjects[0]
-        # 'largest' 방법: 가장 큰 바운딩 박스 면적 기준
         elif method == 'largest':
             best_subject = max(subjects, key=lambda s: s['bbox'][2] * s['bbox'][3])
-        # 'center' 방법: 이미지 중심에서 가장 가까운 바운딩 박스 중심 기준
         elif method == 'center':
-            img_center = (img_w / 2, img_h / 2) # 이미지 중심 좌표
-            # 각 피사체의 bbox 중심과 이미지 중심 간의 유클리드 거리 계산하여 최소 거리 피사체 선택
+            img_center = (img_w / 2, img_h / 2)
             best_subject = min(subjects, key=lambda s: math.dist(s['bbox_center'], img_center))
         else:
-            # 알 수 없는 방법이면 기본값 'largest' 사용 (경고는 main 함수에서 처리)
             best_subject = max(subjects, key=lambda s: s['bbox'][2] * s['bbox'][3])
 
-        # 선택된 주 피사체의 기준점(눈 중심 또는 바운딩 박스 중심) 결정
         ref_center = best_subject['eye_center'] if reference_point_type == 'eye' else best_subject['bbox_center']
         logging.debug(f"주 피사체 선택됨 (방법: {method}, 기준점: {reference_point_type}). BBox: {best_subject['bbox']}")
-        # 주 피사체의 바운딩 박스와 기준점 좌표 튜플 반환
         return best_subject['bbox'], ref_center
 
     except Exception as e:
-        # 주 피사체 선택 중 오류 발생 시 로깅하고 None 반환
         logging.error(f"주 피사체 선택 중 오류 발생: {e}")
         return None
 
 
 def get_rule_points(width: int, height: int, rule_type: str = 'thirds') -> List[Tuple[int, int]]:
     """구도 법칙(3분할 또는 황금비율)에 따른 교차점 목록을 반환합니다."""
-    points = [] # 교차점 좌표 리스트 초기화
-    # 이미지 너비 또는 높이가 0 이하이면 빈 리스트 반환
+    points = []
     if width <= 0 or height <= 0:
         logging.warning(f"유효하지 않은 크기({width}x{height})로 구도점 계산 불가.")
         return []
 
     try:
-        # 'thirds' (3분할) 규칙
         if rule_type == 'thirds':
-            # 가로, 세로 1/3, 2/3 지점들의 교차점 4개 계산
             points = [(w, h) for w in (width / 3, 2 * width / 3) for h in (height / 3, 2 * height / 3)]
-        # 'golden' (황금비율) 규칙
         elif rule_type == 'golden':
-            phi_inv = (math.sqrt(5) - 1) / 2 # 황금비율의 역수 (약 0.618)
-            # 황금 분할 선 좌표 계산
+            phi_inv = (math.sqrt(5) - 1) / 2
             lines_w = (width * (1 - phi_inv), width * phi_inv)
             lines_h = (height * (1 - phi_inv), height * phi_inv)
-            # 황금 분할 선들의 교차점 4개 계산
             points = [(w, h) for w in lines_w for h in lines_h]
-        # 알 수 없는 규칙이면 이미지 중심점 사용
         else:
             logging.warning(f"알 수 없는 구도 규칙 '{rule_type}'. 이미지 중심 사용.")
             points = [(width / 2, height / 2)]
-
-        # 계산된 교차점 좌표를 정수로 반올림하여 반환
         return [(int(round(px)), int(round(py))) for px, py in points]
     except Exception as e:
-        # 구도점 계산 중 오류 발생 시 로깅하고 빈 리스트 반환
         logging.error(f"구도점 계산 중 오류 발생 (규칙: {rule_type}): {e}")
         return []
 
@@ -291,117 +253,93 @@ def get_rule_points(width: int, height: int, rule_type: str = 'thirds') -> List[
 def calculate_optimal_crop(img_shape: Tuple[int, int], subject_center: Tuple[int, int],
                            rule_points: List[Tuple[int, int]], target_aspect_ratio: Optional[float]) -> Optional[Tuple[int, int, int, int]]:
     """주어진 기준점, 구도점, 비율에 맞춰 최적의 크롭 영역(x1, y1, x2, y2)을 계산합니다."""
-    height, width = img_shape # 이미지 높이, 너비
-    # 높이 또는 너비가 0 이하이면 None 반환
+    height, width = img_shape
     if height <= 0 or width <= 0:
         logging.warning(f"이미지 높이({height}) 또는 너비({width})가 0 이하이므로 크롭할 수 없습니다.")
         return None
-
-    # 구도점이 없으면 None 반환
     if not rule_points:
         logging.warning("구도점이 제공되지 않아 크롭 계산을 건너<0xEB><0x84><0x8E>니다.")
         return None
 
-    cx, cy = subject_center # 주 피사체 기준점 좌표
+    cx, cy = subject_center
 
     try:
-        # 목표 종횡비 계산 (미지정 시 원본 비율 사용, 높이 0 방지)
         if height > 0:
             aspect_ratio = target_aspect_ratio if target_aspect_ratio is not None else (width / height)
         else:
              logging.warning("이미지 높이가 0이어서 원본 비율을 계산할 수 없습니다. 크롭 불가.")
              return None
 
-        # 종횡비 유효성 검사
         if aspect_ratio <= 0:
             logging.warning(f"유효하지 않은 비율({aspect_ratio})로 계산 불가.")
             return None
 
-        # 기준점에서 가장 가까운 구도 교차점 찾기
         closest_point = min(rule_points, key=lambda p: math.dist((cx, cy), p))
-        target_x, target_y = closest_point # 이 점을 크롭 영역의 중심으로 사용
+        target_x, target_y = closest_point
 
-        # 타겟 포인트를 중심으로 가질 수 있는 최대 크롭 너비/높이 계산
-        # (타겟 포인트가 이미지 경계에 너무 가까우면 0이 될 수 있음)
         max_w = 2 * min(target_x, width - target_x)
         max_h = 2 * min(target_y, height - target_y)
 
-        # 최대 너비 또는 높이가 0 이하이면 유효한 크롭 불가
         if max_w <= 0 or max_h <= 0:
              logging.debug("타겟 포인트가 이미지 경계에 있어 유효한 크롭 불가.")
              return None
 
-        # 목표 종횡비에 맞춰 크롭 크기 계산
-        # 1. 최대 너비(max_w) 기준 높이 계산
         crop_h_from_w = max_w / aspect_ratio
-        # 2. 최대 높이(max_h) 기준 너비 계산
         crop_w_from_h = max_h * aspect_ratio
 
-        # 두 계산 결과 중 이미지 경계(max_w, max_h) 내에 맞는 크기 선택
-        if crop_h_from_w <= max_h + 1e-6: # 부동 소수점 오차 감안
+        if crop_h_from_w <= max_h + 1e-6:
             final_w, final_h = max_w, crop_h_from_w
         else:
             final_w, final_h = crop_w_from_h, max_h
 
-        # 크롭 영역 좌상단(x1, y1), 우하단(x2, y2) 좌표 계산 (중심 기준)
         x1 = target_x - final_w / 2
         y1 = target_y - final_h / 2
         x2 = x1 + final_w
         y2 = y1 + final_h
 
-        # 좌표를 정수로 반올림하고 이미지 경계 내로 제한
         x1, y1 = max(0, int(round(x1))), max(0, int(round(y1)))
         x2, y2 = min(width, int(round(x2))), min(height, int(round(y2)))
 
-        # 최종 크롭 영역 크기 유효성 검사 (너비 또는 높이가 0인지 확인)
         if x1 >= x2 or y1 >= y2:
             logging.warning("계산된 크롭 영역의 크기가 0입니다.")
             return None
 
         logging.debug(f"계산된 크롭 영역: ({x1}, {y1}) - ({x2}, {y2})")
-        # 최종 크롭 영역 좌표 튜플 반환
         return x1, y1, x2, y2
 
     except Exception as e:
-        # 크롭 계산 중 오류 발생 시 로깅하고 None 반환
         logging.error(f"최적 크롭 계산 중 오류 발생: {e}")
         return None
 
 
 def apply_padding(crop_coords: Tuple[int, int, int, int], img_shape: Tuple[int, int], padding_percent: float) -> Tuple[int, int, int, int]:
     """계산된 크롭 영역에 패딩을 적용하고 이미지 경계 내로 조정합니다."""
-    x1, y1, x2, y2 = crop_coords # 원본 크롭 좌표
-    img_h, img_w = img_shape # 이미지 크기
-    crop_w = x2 - x1 # 크롭 너비
-    crop_h = y2 - y1 # 크롭 높이
+    x1, y1, x2, y2 = crop_coords
+    img_h, img_w = img_shape
+    crop_w = x2 - x1
+    crop_h = y2 - y1
 
-    # 패딩 비율이 0 이하면 원본 좌표 반환
     if padding_percent <= 0:
         return crop_coords
 
-    # 패딩량 계산 (크롭 영역 너비/높이 기준, 좌우/상하 절반씩)
     pad_x = int(round(crop_w * padding_percent / 100 / 2))
     pad_y = int(round(crop_h * padding_percent / 100 / 2))
 
-    # 패딩 적용하여 새 좌표 계산
     new_x1 = x1 - pad_x
     new_y1 = y1 - pad_y
     new_x2 = x2 + pad_x
     new_y2 = y2 + pad_y
 
-    # 새 좌표를 이미지 경계 내로 제한
     new_x1 = max(0, new_x1)
     new_y1 = max(0, new_y1)
     new_x2 = min(img_w, new_x2)
     new_y2 = min(img_h, new_y2)
 
-    # 패딩 적용 후 크기가 유효한지(너비/높이가 0보다 큰지) 확인
     if new_x1 >= new_x2 or new_y1 >= new_y2:
         logging.warning("패딩 적용 후 크롭 영역 크기가 0이 되어 패딩을 적용하지 않습니다.")
-        return crop_coords # 유효하지 않으면 원본 크롭 영역 반환
+        return crop_coords
 
     logging.debug(f"패딩 적용된 크롭 영역 ({padding_percent}%): ({new_x1}, {new_y1}) - ({new_x2}, {new_y2})")
-    # 패딩 적용 및 조정된 좌표 튜플 반환
     return new_x1, new_y1, new_x2, new_y2
 
 
@@ -415,26 +353,25 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
     filename = os.path.basename(image_path)
     logging.debug(f"처리 시작: {filename}")
     start_time = time.time()
-    # Dry Run 모드 확인
     is_dry_run = getattr(args, 'dry_run', False)
     status = {'filename': filename, 'success': False, 'saved_files': 0, 'message': '', 'dry_run': is_dry_run}
     exif_data = None
     original_ext = os.path.splitext(image_path)[1].lower()
 
     try:
-        # PIL로 이미지 열기
         with Image.open(image_path) as pil_img:
-            # EXIF 데이터 추출 시도
+            # --- EXIF 데이터 추출 (오류 처리 강화) ---
             try:
                 exif_data = pil_img.info.get('exif')
                 if exif_data:
-                    _ = Exif.load(exif_data) # 유효성 검사
-                    logging.debug(f"{filename}: EXIF 데이터 로드 성공.")
+                    # Exif.load() 제거 - 직접적인 유효성 검사 대신 저장 시도
+                    logging.debug(f"{filename}: EXIF 데이터 발견됨.")
             except Exception as exif_err:
+                # EXIF 관련 오류 발생 시 경고하고 데이터는 None으로 설정
                 logging.warning(f"{filename}: EXIF 데이터 처리 중 오류: {exif_err}. EXIF 없이 저장됩니다.")
                 exif_data = None
+            # --- EXIF 처리 끝 ---
 
-            # OpenCV 형식으로 변환
             pil_img_rgb = pil_img.convert('RGB')
             img = np.array(pil_img_rgb)[:, :, ::-1].copy()
 
@@ -474,7 +411,7 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
 
     # 출력 파일명 및 확장자 설정
     base = os.path.splitext(filename)[0]
-    target_ratio_str = str(args.ratio) if args.ratio is not None else "Orig" # None 처리 추가
+    target_ratio_str = str(args.ratio) if args.ratio is not None else "Orig"
     ratio_str = f"_r{target_ratio_str.replace(':', '-')}"
     ref_str = f"_ref{args.reference}"
     output_format = args.output_format.lower() if args.output_format else None
@@ -502,46 +439,40 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
     crop_errors = []
     # 각 구도 규칙에 대해 크롭 및 저장/Dry Run
     for rule_name, suffix in rules_to_apply:
-        # 크롭 영역 계산
         rule_points = get_rule_points(img_w, img_h, rule_name)
         target_ratio_float = parse_aspect_ratio(args.ratio)
         crop_coords = calculate_optimal_crop((img_h, img_w), ref_center, rule_points, target_ratio_float)
 
         if crop_coords:
-            # 패딩 적용
             padded_coords = apply_padding(crop_coords, (img_h, img_w), args.padding_percent)
             x1, y1, x2, y2 = padded_coords
 
-            # 최종 크롭 영역 유효성 검사
             if x1 >= x2 or y1 >= y2:
                 msg = f"'{rule_name}' 규칙: 최종 크롭 영역 크기가 0."
                 logging.warning(f"{filename}: {msg}")
                 crop_errors.append(msg)
                 continue
 
-            # 출력 파일 경로
             out_filename = f"{base}{suffix}{ratio_str}{ref_str}{output_ext}"
             out_path = os.path.join(output_dir, out_filename)
 
-            # 덮어쓰기 확인
             if not args.overwrite and os.path.exists(out_path) and not is_dry_run:
                 logging.info(f"{filename}: 파일이 이미 존재하고 덮어쓰기 비활성화됨 - 건너<0xEB><0x84><0x8E>기: {out_filename}")
                 continue
 
-            # --- Dry Run 또는 실제 저장 ---
             if is_dry_run:
                 logging.info(f"[DRY RUN] {filename}: '{out_filename}' 저장 예정 (규칙: {rule_name}, 영역: {x1},{y1}-{x2},{y2})")
-                saved_count += 1 # Dry Run에서도 성공으로 카운트
+                saved_count += 1
             else:
-                # 실제 저장 로직
                 try:
-                    cropped_img_bgr = img[y1:y2, x1:x2] # 실제 크롭은 저장 직전에 수행
-                    if cropped_img_bgr.size == 0: # 혹시 모를 재확인
+                    cropped_img_bgr = img[y1:y2, x1:x2]
+                    if cropped_img_bgr.size == 0:
                          raise ValueError("크롭된 이미지 크기가 0입니다.")
 
                     cropped_img_rgb = cv2.cvtColor(cropped_img_bgr, cv2.COLOR_BGR2RGB)
                     pil_cropped_img = Image.fromarray(cropped_img_rgb)
                     save_options = {}
+                    # 저장 시 EXIF 데이터(bytes) 전달
                     if exif_data and isinstance(exif_data, bytes):
                         save_options['exif'] = exif_data
                     if output_ext.lower() in ['.jpg', '.jpeg']:
@@ -557,9 +488,8 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
                      crop_errors.append(msg)
                 except Exception as e:
                     msg = f"크롭 이미지 저장 중 오류 ({out_filename}): {e}"
-                    logging.error(f"{filename}: {msg}", exc_info=args.verbose) # 상세 로깅 시 스택 트레이스 포함
+                    logging.error(f"{filename}: {msg}", exc_info=args.verbose)
                     crop_errors.append(msg)
-            # --- Dry Run / 저장 끝 ---
         else:
              msg = f"'{rule_name}' 규칙: 유효 크롭 영역 생성 실패."
              logging.warning(f"{filename}: {msg}")
@@ -568,7 +498,6 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
     end_time = time.time()
     processing_time = end_time - start_time
 
-    # 최종 상태 업데이트
     if saved_count > 0:
         status['success'] = True
         status['saved_files'] = saved_count
@@ -577,10 +506,9 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
         if crop_errors:
             status['message'] += f" 일부 오류 발생: {'; '.join(crop_errors)}"
         logging.info(f"{filename}: {status['message']}")
-    elif detected_faces: # 얼굴 감지 O, 저장/Dry Run X
+    elif detected_faces:
         status['message'] = f"얼굴은 감지되었으나 유효한 크롭/저장{' 시뮬레이션' if is_dry_run else ''} 실패 ({processing_time:.2f}초 소요). 오류: {'; '.join(crop_errors) if crop_errors else '크롭 영역 계산 실패'}"
         logging.info(f"{filename}: {status['message']}")
-    # 얼굴 미감지 경우는 이미 위에서 처리됨
 
     return status
 
@@ -592,7 +520,6 @@ def process_image_wrapper(args_tuple):
     try:
         return process_image(image_path, output_dir, detector, args_namespace)
     except Exception as e:
-        # process_image 내부에서 처리되지 않은 예외 처리
         filename = os.path.basename(image_path)
         logging.error(f"{filename}: 처리 중 심각한 오류 발생: {e}", exc_info=True)
         return {'filename': filename, 'success': False, 'saved_files': 0, 'message': f"처리 중 심각한 오류: {e}", 'dry_run': getattr(args_namespace, 'dry_run', False)}
@@ -608,7 +535,7 @@ def main():
     )
     # --- 기본 인수 ---
     parser.add_argument("input_path", help="처리할 이미지 파일 또는 디렉토리 경로.")
-    # --- 단축 인수 추가 시작 ---
+    # --- 단축 인수 추가 ---
     parser.add_argument("-o", "--output_dir", help="결과 저장 디렉토리.")
     parser.add_argument("--config", help="옵션을 불러올 JSON 설정 파일 경로.")
 
@@ -619,7 +546,7 @@ def main():
 
     # --- 얼굴 감지 및 선택 인수 ---
     parser.add_argument("-m", "--method", choices=['largest', 'center'], help="주 피사체 선택 방법.")
-    parser.add_argument("--ref", "--reference", dest="reference", choices=['eye', 'box'], help="구도 기준점 타입.") # dest 추가하여 충돌 방지
+    parser.add_argument("--ref", "--reference", dest="reference", choices=['eye', 'box'], help="구도 기준점 타입.")
     parser.add_argument("-c", "--confidence", type=float, help="얼굴 감지 최소 신뢰도.")
     parser.add_argument("-n", "--nms", type=float, help="얼굴 감지 NMS 임계값.")
     parser.add_argument("--min-face-width", type=int, help="처리할 최소 얼굴 너비 (픽셀).")
@@ -637,24 +564,19 @@ def main():
     # --- 기타 인수 ---
     parser.add_argument("-v", "--verbose", action="store_true", help="상세 로깅(DEBUG 레벨) 활성화.")
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
-    # --- 단축 인수 추가 끝 ---
 
-    # 1차 파싱: 명령줄 인수만 우선 읽기
+    # 1차 파싱
     args = parser.parse_args()
 
     # --- 설정 로드 및 병합 ---
-    config = DEFAULT_CONFIG.copy() # 기본 설정으로 시작
-
-    # 설정 파일 로드 (명령줄 --config 우선)
+    config = DEFAULT_CONFIG.copy()
     config_path = args.config
     if config_path:
         loaded_config = load_config(config_path)
-        # 로드된 설정 중 유효한 키만 기본 설정에 업데이트
         for key, value in loaded_config.items():
             if key in config:
                 if key == 'ratio' and value is not None:
                     config[key] = str(value)
-                # padding_percent는 float으로 유지
                 elif key == 'padding_percent' and value is not None:
                     config[key] = float(value)
                 else:
@@ -662,37 +584,30 @@ def main():
             else:
                 logging.warning(f"설정 파일의 알 수 없는 키 '{key}'는 무시됩니다.")
 
-    # 명령줄 인수로 설정 덮어쓰기 (제공된 경우만)
+    # 명령줄 인수로 설정 덮어쓰기
     cmd_args = vars(args)
     for key, value in cmd_args.items():
         if value is not None:
-            # BooleanOptionalAction 또는 store_true/false 처리
             is_bool_action = isinstance(parser.get_default(key), bool) or \
                              any(action.dest == key and isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse.BooleanOptionalAction))
                                  for action in parser._actions)
-
             if is_bool_action:
-                 # BooleanOptionalAction은 값이 None이 아닐 때만 덮어쓰기 (명령줄에서 --no-xxx 사용 시 False가 됨)
                  if isinstance(value, bool):
                       config[key] = value
-                 # store_true/false는 항상 값이 있으므로 덮어쓰기
                  elif isinstance(parser._get_action_from_dest(key), (argparse._StoreTrueAction, argparse._StoreFalseAction)):
                       config[key] = value
-
-            # 그 외 인수는 기본값과 다른 경우 또는 설정 파일 값과 다른 경우 덮어쓰기
             elif value != parser.get_default(key) or (config_path and value != loaded_config.get(key)):
                 if key == 'ratio' and value is not None:
                      config[key] = str(value)
                 elif key == 'padding_percent' and value is not None:
                      config[key] = float(value)
-                elif key != 'config': # config 자체는 저장 안 함
+                elif key != 'config':
                      config[key] = value
 
-
-    # 최종 설정을 argparse Namespace 객체로 다시 변환
+    # 최종 설정을 Namespace 객체로 변환
     final_args = argparse.Namespace(**config)
 
-    # 상세 로깅 설정 (최종 설정 기준)
+    # 로깅 레벨 설정
     if final_args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
         logging.debug("상세 로깅 활성화됨.")
@@ -700,10 +615,8 @@ def main():
     else:
          logging.getLogger().setLevel(logging.INFO)
 
-    # Dry Run 모드 알림
     if final_args.dry_run:
         logging.info("***** Dry Run 모드로 실행 중입니다. 실제 파일은 저장되지 않습니다. *****")
-
 
     # --- 최종 인수 유효성 검사 ---
     if final_args.min_face_width < 0:
@@ -720,12 +633,10 @@ def main():
         final_args.workers = DEFAULT_CONFIG['workers']
 
     # --- 준비 단계 ---
-    # DNN 모델 파일 다운로드
     if not download_model(YUNET_MODEL_URL, YUNET_MODEL_PATH):
         logging.critical("DNN 모델 파일이 준비되지 않아 처리를 중단합니다.")
         return
 
-    # 얼굴 감지기 로드
     try:
         logging.debug("얼굴 감지 모델 로딩 중...")
         global_detector = cv2.FaceDetectorYN.create(YUNET_MODEL_PATH, "", (0, 0))
@@ -739,7 +650,6 @@ def main():
         logging.critical(f"얼굴 감지 모델 로드 중 예상치 못한 오류: {e}")
         return
 
-    # 출력 디렉토리 생성 (Dry Run 모드가 아닐 때만)
     if not final_args.dry_run:
         if not os.path.exists(final_args.output_dir):
             try:
@@ -754,16 +664,13 @@ def main():
     else:
          logging.info(f"[DRY RUN] 출력 디렉토리 확인/생성 건너<0xEB><0x84><0x8E>기: {final_args.output_dir}")
 
-
     # --- 이미지 처리 ---
-    input_path = args.input_path # 명령줄에서 받은 input_path 사용
+    input_path = args.input_path
     if os.path.isfile(input_path):
-        # 단일 파일 처리
         logging.info(f"단일 파일 처리 시작: {input_path}")
         result = process_image(input_path, final_args.output_dir, global_detector, final_args)
         logging.info(f"단일 파일 처리 완료. 결과: {result['message']}")
     elif os.path.isdir(input_path):
-        # 디렉토리 처리
         logging.info(f"디렉토리 처리 시작: {input_path}")
         supported_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif')
         try:
@@ -786,7 +693,6 @@ def main():
         total_saved_files = 0
         failed_files = []
 
-        # 병렬 처리 또는 순차 처리
         if final_args.workers > 1:
             with concurrent.futures.ThreadPoolExecutor(max_workers=final_args.workers) as executor:
                 tasks = [(img_path, final_args.output_dir, global_detector, final_args) for img_path in image_files]
@@ -813,7 +719,6 @@ def main():
             if not result['success']:
                  failed_files.append(f"{result['filename']} ({result['message']})")
 
-
         total_end_time = time.time()
         total_processing_time = total_end_time - total_start_time
         action_verb = "시뮬레이션" if final_args.dry_run else "처리"
@@ -828,8 +733,8 @@ def main():
         if failed_files:
             logging.info("실패 상세 정보 (오류 로그 확인):")
             for i, fail_info in enumerate(failed_files):
-                 if i < 10: # 너무 많으면 일부만 표시
-                    logging.info(f"  - {fail_info.split(' (')[0]}") # 파일명만 추출
+                 if i < 10:
+                    logging.info(f"  - {fail_info.split(' (')[0]}")
                  elif i == 10:
                     logging.info("  - ... (더 많은 실패 항목은 로그 확인)")
                     break
