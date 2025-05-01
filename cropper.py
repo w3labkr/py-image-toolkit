@@ -11,13 +11,14 @@
 - 오류 요약 보고 기능 추가
 - 설정 파일 지원 (--config) 추가
 - Dry Run 모드 (--dry-run) 추가
+- 주요 옵션 단축 인수 추가 (예: -o, -m, -r)
 
 DNN 모델(YuNet)을 사용하여 얼굴 및 랜드마크를 감지합니다.
 
 필요한 라이브러리:
 pip install opencv-python numpy Pillow tqdm
 
-버전: 1.6.0 (설정 파일, Dry Run 추가)
+버전: 1.6.1 (단축 인수 추가)
 """
 import cv2
 import numpy as np
@@ -42,7 +43,7 @@ except ImportError:
         logging.info("tqdm 라이브러리가 설치되지 않아 진행 표시줄을 생략합니다. (pip install tqdm)")
         return iterable
 
-__version__ = "1.6.0" # 버전 업데이트
+__version__ = "1.6.1" # 버전 업데이트
 
 # --- 기본 설정값 ---
 DEFAULT_CONFIG = {
@@ -57,11 +58,11 @@ DEFAULT_CONFIG = {
     "jpeg_quality": 95,
     "min_face_width": 30,
     "min_face_height": 30,
-    "padding_percent": 5.0, # float으로 변경
+    "padding_percent": 5.0,
     "rule": "both",
     "workers": os.cpu_count(),
     "verbose": False,
-    "dry_run": False # Dry Run 기본값 추가
+    "dry_run": False
 }
 
 # DNN 모델 정보
@@ -77,7 +78,6 @@ OUTPUT_SUFFIX_GOLDEN = '_golden'
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 # --- 유틸리티 함수 ---
-# (download_model, parse_aspect_ratio 함수는 이전 버전과 동일)
 def download_model(url: str, file_path: str) -> bool:
     """지정된 URL에서 모델 파일을 다운로드합니다."""
     if not os.path.exists(file_path):
@@ -96,10 +96,10 @@ def download_model(url: str, file_path: str) -> bool:
 
 def parse_aspect_ratio(ratio_str: Optional[str]) -> Optional[float]:
     """문자열 형태의 비율(예: '16:9', '1.0', 'None')을 float으로 변환합니다."""
-    if ratio_str is None or str(ratio_str).lower() == 'none': # str() 추가하여 None 타입 오류 방지
+    if ratio_str is None or str(ratio_str).lower() == 'none':
         return None
     try:
-        ratio_str = str(ratio_str) # 숫자형이 들어올 경우 문자열로 변환
+        ratio_str = str(ratio_str)
         if ':' in ratio_str:
             w_str, h_str = ratio_str.split(':')
             w, h = float(w_str), float(h_str)
@@ -608,17 +608,18 @@ def main():
     )
     # --- 기본 인수 ---
     parser.add_argument("input_path", help="처리할 이미지 파일 또는 디렉토리 경로.")
+    # --- 단축 인수 추가 시작 ---
     parser.add_argument("-o", "--output_dir", help="결과 저장 디렉토리.")
     parser.add_argument("--config", help="옵션을 불러올 JSON 설정 파일 경로.")
 
     # --- 동작 제어 인수 ---
     parser.add_argument("--overwrite", action=argparse.BooleanOptionalAction, help="출력 파일 덮어쓰기 허용 여부.")
     parser.add_argument("--dry-run", action="store_true", help="실제 파일 저장 없이 처리 과정 시뮬레이션.")
-    parser.add_argument("--workers", type=int, help="병렬 처리 작업자 수 (0 또는 1이면 순차 처리).")
+    parser.add_argument("-w", "--workers", type=int, help="병렬 처리 작업자 수 (0 또는 1이면 순차 처리).")
 
     # --- 얼굴 감지 및 선택 인수 ---
     parser.add_argument("-m", "--method", choices=['largest', 'center'], help="주 피사체 선택 방법.")
-    parser.add_argument("-ref", "--reference", choices=['eye', 'box'], help="구도 기준점 타입.")
+    parser.add_argument("--ref", "--reference", dest="reference", choices=['eye', 'box'], help="구도 기준점 타입.") # dest 추가하여 충돌 방지
     parser.add_argument("-c", "--confidence", type=float, help="얼굴 감지 최소 신뢰도.")
     parser.add_argument("-n", "--nms", type=float, help="얼굴 감지 NMS 임계값.")
     parser.add_argument("--min-face-width", type=int, help="처리할 최소 얼굴 너비 (픽셀).")
@@ -627,15 +628,16 @@ def main():
     # --- 크롭 및 구도 인수 ---
     parser.add_argument("-r", "--ratio", type=str, help="목표 크롭 비율 (예: '16:9', '1.0', 'None').")
     parser.add_argument("--rule", choices=['thirds', 'golden', 'both'], help="적용할 구도 규칙.")
-    parser.add_argument("--padding-percent", type=float, help="크롭 영역 주변 패딩 비율 (%).")
+    parser.add_argument("-p", "--padding-percent", type=float, help="크롭 영역 주변 패딩 비율 (%).")
 
     # --- 출력 형식 인수 ---
     parser.add_argument("--output-format", type=str, help="출력 이미지 형식 (예: 'jpg', 'png').")
-    parser.add_argument("--jpeg-quality", type=int, choices=range(1, 101), metavar="[1-100]", help="JPEG 저장 품질 (1-100).")
+    parser.add_argument("-q", "--jpeg-quality", type=int, choices=range(1, 101), metavar="[1-100]", help="JPEG 저장 품질 (1-100).")
 
     # --- 기타 인수 ---
     parser.add_argument("-v", "--verbose", action="store_true", help="상세 로깅(DEBUG 레벨) 활성화.")
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+    # --- 단축 인수 추가 끝 ---
 
     # 1차 파싱: 명령줄 인수만 우선 읽기
     args = parser.parse_args()
@@ -650,40 +652,44 @@ def main():
         # 로드된 설정 중 유효한 키만 기본 설정에 업데이트
         for key, value in loaded_config.items():
             if key in config:
-                 # 타입 변환이 필요한 경우 처리 (예: ratio)
                 if key == 'ratio' and value is not None:
-                    config[key] = str(value) # 문자열로 통일
+                    config[key] = str(value)
+                # padding_percent는 float으로 유지
+                elif key == 'padding_percent' and value is not None:
+                    config[key] = float(value)
                 else:
                     config[key] = value
             else:
                 logging.warning(f"설정 파일의 알 수 없는 키 '{key}'는 무시됩니다.")
 
     # 명령줄 인수로 설정 덮어쓰기 (제공된 경우만)
-    # argparse는 인수가 제공되지 않으면 None을 반환하므로 이를 확인
     cmd_args = vars(args)
     for key, value in cmd_args.items():
-        # 명령줄에서 명시적으로 제공된 인수만 config를 덮어쓰도록 함
-        # (단, action='store_true'/'store_false'나 BooleanOptionalAction은 값이 항상 있으므로 그대로 사용)
         if value is not None:
-             # BooleanOptionalAction 처리 (값이 True/False)
-            if isinstance(parser.get_default(key), bool) or key in ['overwrite', 'dry_run', 'verbose']:
-                 config[key] = value
-            # 그 외 인수는 기본값과 다른 경우에만 덮어쓰기 (명령줄 우선)
-            # 또는 config 파일 로딩 후 argparse 기본값과 다른 경우
+            # BooleanOptionalAction 또는 store_true/false 처리
+            is_bool_action = isinstance(parser.get_default(key), bool) or \
+                             any(action.dest == key and isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction, argparse.BooleanOptionalAction))
+                                 for action in parser._actions)
+
+            if is_bool_action:
+                 # BooleanOptionalAction은 값이 None이 아닐 때만 덮어쓰기 (명령줄에서 --no-xxx 사용 시 False가 됨)
+                 if isinstance(value, bool):
+                      config[key] = value
+                 # store_true/false는 항상 값이 있으므로 덮어쓰기
+                 elif isinstance(parser._get_action_from_dest(key), (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+                      config[key] = value
+
+            # 그 외 인수는 기본값과 다른 경우 또는 설정 파일 값과 다른 경우 덮어쓰기
             elif value != parser.get_default(key) or (config_path and value != loaded_config.get(key)):
-                 # 타입 변환이 필요한 경우 처리
                 if key == 'ratio' and value is not None:
                      config[key] = str(value)
-                elif key == 'workers' and value is not None: # workers는 None일 수 없음
-                     config[key] = int(value)
                 elif key == 'padding_percent' and value is not None:
                      config[key] = float(value)
-                # confidence, nms, min_face_width/height, jpeg_quality 등은 이미 타입 지정됨
                 elif key != 'config': # config 자체는 저장 안 함
                      config[key] = value
 
 
-    # 최종 설정을 argparse Namespace 객체로 다시 변환 (코드 재사용 위함)
+    # 최종 설정을 argparse Namespace 객체로 다시 변환
     final_args = argparse.Namespace(**config)
 
     # 상세 로깅 설정 (최종 설정 기준)
@@ -692,7 +698,7 @@ def main():
         logging.debug("상세 로깅 활성화됨.")
         logging.debug(f"최종 적용 설정: {vars(final_args)}")
     else:
-         logging.getLogger().setLevel(logging.INFO) # 기본 INFO 레벨 확인
+         logging.getLogger().setLevel(logging.INFO)
 
     # Dry Run 모드 알림
     if final_args.dry_run:
@@ -712,7 +718,6 @@ def main():
     if final_args.workers < 0:
         logging.warning(f"작업자 수는 0 이상이어야 합니다 ({final_args.workers}). 기본값 {DEFAULT_CONFIG['workers']} 사용.")
         final_args.workers = DEFAULT_CONFIG['workers']
-    # ratio 는 None일 수 있으므로 별도 검사 없음 (parse_aspect_ratio에서 처리)
 
     # --- 준비 단계 ---
     # DNN 모델 파일 다운로드
@@ -805,7 +810,6 @@ def main():
             if result['success']:
                 success_count += 1
                 total_saved_files += result['saved_files']
-            # 실패 메시지는 process_image 내부에서 이미 로깅됨
             if not result['success']:
                  failed_files.append(f"{result['filename']} ({result['message']})")
 
@@ -823,7 +827,6 @@ def main():
         logging.info(f"실패 또는 부분 실패 파일 수: {len(failed_files)}")
         if failed_files:
             logging.info("실패 상세 정보 (오류 로그 확인):")
-            # 상세 오류는 이미 로그에 출력되었으므로 여기서는 파일명만 나열
             for i, fail_info in enumerate(failed_files):
                  if i < 10: # 너무 많으면 일부만 표시
                     logging.info(f"  - {fail_info.split(' (')[0]}") # 파일명만 추출
