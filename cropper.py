@@ -2,9 +2,10 @@
 """
 이미지 내 얼굴을 감지하고, 얼굴 랜드마크(눈 중심) 또는 바운딩 박스 중심을 기준으로
 3분할 법칙 또는 황금 비율에 맞춰 자동으로 크롭하는 스크립트 (명령줄 인수 사용).
+**수정:** 크롭된 이미지 저장 시 원본 EXIF 데이터를 보존합니다.
 
 DNN 모델(YuNet)을 사용하여 얼굴 및 랜드마크를 감지합니다.
-버전: 1.1.0
+버전: 1.2.0 (EXIF 보존 기능 추가)
 """
 import cv2
 import numpy as np
@@ -12,7 +13,7 @@ import os
 import math
 import urllib.request
 import argparse
-from PIL import Image
+from PIL import Image # PIL 라이브러리 사용
 from typing import Tuple, List, Optional, Dict, Any, Union
 
 # tqdm import 시도 (없으면 기능 비활성화)
@@ -25,7 +26,7 @@ except ImportError:
         print("INFO: tqdm 라이브러리가 설치되지 않아 진행 표시줄을 생략합니다. (pip install tqdm)")
         return iterable
 
-__version__ = "1.1.0"
+__version__ = "1.2.0" # 버전 업데이트
 
 # --- 기본 설정값 (명령줄 인수로 덮어쓸 수 있음) ---
 DEFAULT_OUTPUT_DIR = "output_final"
@@ -80,71 +81,124 @@ def parse_aspect_ratio(ratio_str: Optional[str]) -> Optional[float]:
 
 def detect_faces_dnn(image: np.ndarray, model_path: str, conf_threshold: float, nms_threshold: float) -> List[Dict[str, Any]]:
     """DNN 모델(YuNet)을 사용하여 얼굴 목록(bbox, bbox_center, eye_center, confidence)을 감지합니다."""
-    # (이전 버전과 동일 - 내부 로직 변경 없음)
     if not os.path.exists(model_path):
         print(f"ERROR: DNN 모델 파일을 찾을 수 없습니다: {model_path}")
         return []
     img_h, img_w = image.shape[:2]
     detected_subjects = []
     try:
+        # 얼굴 감지기 생성 및 설정
         detector = cv2.FaceDetectorYN.create(model_path, "", (0, 0))
         detector.setInputSize((img_w, img_h))
         detector.setScoreThreshold(conf_threshold)
         detector.setNMSThreshold(nms_threshold)
+
+        # 얼굴 감지 수행
         faces = detector.detect(image)
+
+        # 감지된 얼굴 정보 처리
         if faces[1] is not None:
             for idx, face_info in enumerate(faces[1]):
+                # 얼굴 경계 상자 좌표 (정수형 변환)
                 x, y, w, h = map(int, face_info[:4])
+                # 눈 랜드마크 좌표
                 r_eye_x, r_eye_y = face_info[4:6]
                 l_eye_x, l_eye_y = face_info[6:8]
+                # 신뢰도 점수
                 confidence = face_info[14]
-                x = max(0, x); y = max(0, y)
-                w = min(img_w - x, w); h = min(img_h - y, h)
+
+                # 경계 상자 좌표 보정 (이미지 경계 내)
+                x = max(0, x)
+                y = max(0, y)
+                w = min(img_w - x, w)
+                h = min(img_h - y, h)
+
+                # 유효한 경계 상자인 경우 처리
                 if w > 0 and h > 0:
+                    # 경계 상자 중심 계산
                     bbox_center = (x + w // 2, y + h // 2)
-                    eye_center = bbox_center
+                    eye_center = bbox_center # 기본값은 bbox 중심
+
+                    # 눈 랜드마크가 유효한 경우 눈 중심 계산
                     if r_eye_x > 0 and r_eye_y > 0 and l_eye_x > 0 and l_eye_y > 0:
                         ecx = int(round((r_eye_x + l_eye_x) / 2))
                         ecy = int(round((r_eye_y + l_eye_y) / 2))
-                        ecx = max(0, min(img_w - 1, ecx)); ecy = max(0, min(img_h - 1, ecy))
+                        # 눈 중심 좌표 보정 (이미지 경계 내)
+                        ecx = max(0, min(img_w - 1, ecx))
+                        ecy = max(0, min(img_h - 1, ecy))
                         eye_center = (ecx, ecy)
-                    else: print(f"WARN: 얼굴 ID {idx}의 눈 랜드마크가 유효하지 않아 BBox 중심을 사용합니다.")
-                    detected_subjects.append({'bbox': (x, y, w, h), 'bbox_center': bbox_center, 'eye_center': eye_center, 'confidence': confidence})
-    except Exception as e: print(f"ERROR: DNN 얼굴 감지 중 문제 발생: {e}")
+                    else:
+                        # 눈 랜드마크가 유효하지 않으면 경고 출력
+                        print(f"WARN: 얼굴 ID {idx}의 눈 랜드마크가 유효하지 않아 BBox 중심을 사용합니다.")
+
+                    # 감지된 피사체 정보 추가
+                    detected_subjects.append({
+                        'bbox': (x, y, w, h),
+                        'bbox_center': bbox_center,
+                        'eye_center': eye_center,
+                        'confidence': confidence
+                    })
+    except Exception as e:
+        # DNN 얼굴 감지 중 오류 발생 시 에러 메시지 출력
+        print(f"ERROR: DNN 얼굴 감지 중 문제 발생: {e}")
     return detected_subjects
 
 
 def select_main_subject(subjects: List[Dict[str, Any]], img_shape: Tuple[int, int],
                         method: str = 'largest', reference_point_type: str = 'eye') -> Optional[Tuple[Tuple[int, int, int, int], Tuple[int, int]]]:
     """감지된 피사체 목록에서 주 피사체를 선택하고 기준점을 반환합니다."""
-    # (이전 버전과 동일 - 내부 로직 변경 없음)
-    if not subjects: return None
+    if not subjects:
+        # 감지된 피사체가 없으면 None 반환
+        return None
+
     best_subject = None
-    if len(subjects) == 1: best_subject = subjects[0]
-    elif method == 'largest': best_subject = max(subjects, key=lambda s: s['bbox'][2] * s['bbox'][3])
+    if len(subjects) == 1:
+        # 피사체가 하나면 그것을 선택
+        best_subject = subjects[0]
+    elif method == 'largest':
+        # 'largest' 방법: 가장 큰 경계 상자를 가진 피사체 선택
+        best_subject = max(subjects, key=lambda s: s['bbox'][2] * s['bbox'][3])
     elif method == 'center':
-        img_h, img_w = img_shape; img_center = (img_w / 2, img_h / 2)
+        # 'center' 방법: 이미지 중앙에 가장 가까운 피사체 선택
+        img_h, img_w = img_shape
+        img_center = (img_w / 2, img_h / 2)
         min_dist = float('inf')
         for s in subjects:
+            # 각 피사체의 경계 상자 중심과 이미지 중심 간의 거리 계산
             dist = math.dist(s['bbox_center'], img_center)
-            if dist < min_dist: min_dist = dist; best_subject = s
+            if dist < min_dist:
+                min_dist = dist
+                best_subject = s
     else:
-        if method != 'largest': print(f"WARN: 알 수 없는 주 피사체 선택 방법 '{method}'. 'largest' 사용.")
+        # 알 수 없는 방법이면 경고 출력 후 'largest' 사용
+        if method != 'largest':
+            print(f"WARN: 알 수 없는 주 피사체 선택 방법 '{method}'. 'largest' 사용.")
         best_subject = max(subjects, key=lambda s: s['bbox'][2] * s['bbox'][3])
+
+    # 선택된 주 피사체의 기준점(눈 중심 또는 경계 상자 중심) 결정
     ref_center = best_subject['eye_center'] if reference_point_type == 'eye' else best_subject['bbox_center']
+
+    # 주 피사체의 경계 상자와 기준점 반환
     return best_subject['bbox'], ref_center
 
 
 def get_rule_points(width: int, height: int, rule_type: str = 'thirds') -> List[Tuple[int, int]]:
     """구도 법칙(3분할 또는 황금비율)에 따른 교차점 목록을 반환합니다."""
-    # (이전 버전과 동일 - 내부 로직 변경 없음)
     points = []
-    if rule_type == 'thirds': points = [(w, h) for w in (width / 3, 2 * width / 3) for h in (height / 3, 2 * height / 3)]
+    if rule_type == 'thirds':
+        # 3분할 법칙: 가로, 세로를 3등분하는 선들의 교차점 4개
+        points = [(w, h) for w in (width / 3, 2 * width / 3) for h in (height / 3, 2 * height / 3)]
     elif rule_type == 'golden':
-        phi_inv = (math.sqrt(5) - 1) / 2
-        lines_w = (width * (1 - phi_inv), width * phi_inv); lines_h = (height * (1 - phi_inv), height * phi_inv)
+        # 황금 비율: 황금 분할 선들의 교차점 4개
+        phi_inv = (math.sqrt(5) - 1) / 2 # 1 / phi
+        lines_w = (width * (1 - phi_inv), width * phi_inv)
+        lines_h = (height * (1 - phi_inv), height * phi_inv)
         points = [(w, h) for w in lines_w for h in lines_h]
-    else: points = [(width / 2, height / 2)]
+    else:
+        # 규칙이 없으면 이미지 중심점 사용
+        points = [(width / 2, height / 2)]
+
+    # 계산된 교차점 좌표를 정수로 반올림하여 반환
     return [(int(round(px)), int(round(py))) for px, py in points]
 
 
@@ -152,58 +206,82 @@ def calculate_optimal_crop(img_shape: Tuple[int, int], subject_center: Tuple[int
                            rule_points: List[Tuple[int, int]], target_aspect_ratio: Optional[float]) -> Tuple[int, int, int, int]:
     """주어진 기준점, 구도점, 비율에 맞춰 최적의 크롭 영역(x1, y1, x2, y2)을 계산합니다."""
     height, width = img_shape
-    # **개선:** 높이가 0 이하인 경우 처리
+    # 이미지 높이나 너비가 0 이하인 경우 처리
     if height <= 0 or width <= 0:
         print("WARN: 이미지 높이 또는 너비가 0 이하이므로 크롭할 수 없습니다.")
         return 0, 0, width, height
 
-    cx, cy = subject_center
-    aspect_ratio = target_aspect_ratio if target_aspect_ratio else (width / height)
+    cx, cy = subject_center # 주 피사체 기준점
 
+    # 목표 비율이 없으면 원본 이미지 비율 사용
+    aspect_ratio = target_aspect_ratio if target_aspect_ratio is not None else (width / height)
+
+    # 기준점에서 가장 가까운 구도 교차점 찾기
     closest_point = min(rule_points, key=lambda p: math.dist((cx, cy), p))
-    target_x, target_y = closest_point
+    target_x, target_y = closest_point # 이 점이 크롭 영역의 중심이 되도록 함
 
+    # 타겟 포인트를 중심으로 가질 수 있는 최대 크롭 너비/높이 계산
     max_w = 2 * min(target_x, width - target_x)
     max_h = 2 * min(target_y, height - target_y)
 
+    # 최대 너비/높이가 0 이하이면 유효한 크롭 불가
     if max_w <= 0 or max_h <= 0:
          print("WARN: 타겟 포인트가 이미지 경계에 있어 유효한 크롭 불가.")
          return 0, 0, width, height
 
-    # **개선:** aspect_ratio가 0 이하인 경우 (이론상 parse_aspect_ratio에서 걸러지지만 방어 코드)
+    # 목표 비율이 유효하지 않은 경우 처리 (parse_aspect_ratio에서 걸러지지만 방어 코드)
     if aspect_ratio <= 0:
         print(f"WARN: 유효하지 않은 비율({aspect_ratio})로 계산 불가. 원본 크기 반환.")
         return 0, 0, width, height
 
+    # 목표 비율에 맞춰 크롭 크기 계산
+    # 1. 최대 너비(max_w)를 기준으로 높이 계산
     crop_h_from_w = max_w / aspect_ratio
+    # 2. 최대 높이(max_h)를 기준으로 너비 계산
     crop_w_from_h = max_h * aspect_ratio
 
+    # 두 계산 결과 중 이미지 경계 내에 맞는 크기 선택
+    # (max_w, max_h) 사각형 안에 들어가는 가장 큰 크롭 영역 선택
     if crop_h_from_w <= max_h + 1e-6: # 부동 소수점 오차 감안
+        # 너비 기준 계산 결과가 최대 높이보다 작거나 같으면 이 크기 사용
         final_w, final_h = max_w, crop_h_from_w
     else:
+        # 높이 기준 계산 결과 사용
         final_w, final_h = crop_w_from_h, max_h
 
-    x1 = target_x - final_w / 2; y1 = target_y - final_h / 2
-    x2 = x1 + final_w; y2 = y1 + final_h
+    # 크롭 영역 좌상단(x1, y1), 우하단(x2, y2) 좌표 계산
+    x1 = target_x - final_w / 2
+    y1 = target_y - final_h / 2
+    x2 = x1 + final_w
+    y2 = y1 + final_h
 
+    # 좌표를 정수로 변환하고 이미지 경계 내로 제한
     x1, y1 = max(0, int(round(x1))), max(0, int(round(y1)))
     x2, y2 = min(width, int(round(x2))), min(height, int(round(y2)))
 
+    # 최종 크롭 영역 크기가 유효하지 않은 경우 (너비 또는 높이가 0)
     if x1 >= x2 or y1 >= y2:
         print("WARN: 유효한 크롭 영역 계산 불가 (크기 0).")
         return 0, 0, width, height
 
+    # 최종 크롭 영역 좌표 반환
     return x1, y1, x2, y2
 
 # --- 메인 처리 함수 ---
 
 def process_image(image_path: str, output_dir: str, args: argparse.Namespace):
-    """단일 이미지를 처리하여 크롭된 결과를 저장합니다."""
-    # print(f"INFO: 처리 시작 - {os.path.basename(image_path)}") # tqdm 사용 시 중복 출력 방지
-
+    """단일 이미지를 처리하여 크롭된 결과를 저장합니다. (EXIF 보존)"""
+    exif_data = None # EXIF 데이터 초기화
     try:
-        pil_img = Image.open(image_path).convert('RGB')
-        img = np.array(pil_img)[:, :, ::-1].copy()
+        # PIL로 이미지 열기 (EXIF 추출 목적)
+        pil_img = Image.open(image_path)
+        # RGB 모드로 변환 (OpenCV 호환)
+        pil_img_rgb = pil_img.convert('RGB')
+        # 원본 EXIF 데이터 가져오기
+        exif_data = pil_img.info.get('exif')
+        # PIL 이미지를 OpenCV 형식(NumPy 배열, BGR)으로 변환
+        img = np.array(pil_img_rgb)[:, :, ::-1].copy()
+        pil_img.close() # PIL 이미지 객체 닫기
     except FileNotFoundError:
         print(f"ERROR: 이미지 파일을 찾을 수 없습니다: {image_path}")
         return
@@ -212,72 +290,105 @@ def process_image(image_path: str, output_dir: str, args: argparse.Namespace):
         return
 
     img_h, img_w = img.shape[:2]
+    # 이미지 크기 유효성 검사
     if img_h <= 0 or img_w <= 0:
         print(f"WARN: 유효하지 않은 이미지 크기 ({img_w}x{img_h}) - 건너<0xEB><0x84><0x8E>니다: {os.path.basename(image_path)}")
         return
 
+    # DNN 얼굴 감지
     detected_faces = detect_faces_dnn(img, YUNET_MODEL_PATH, args.confidence, args.nms)
     if not detected_faces:
-        # tqdm 사용 시 줄바꿈을 위해 print 대신 file 인자 사용 고려 가능
-        # print(f"INFO: 얼굴 감지 실패 - {os.path.basename(image_path)}")
-        return # 실패 시 조용히 넘어감 (로그 레벨 조정으로 변경 가능)
+        # 얼굴 감지 실패 시 조용히 종료 (로그 레벨 조정 가능)
+        return
 
+    # 주 피사체 선택
     selection_result = select_main_subject(detected_faces, (img_h, img_w), args.method, args.reference)
     if not selection_result:
-         # print(f"ERROR: 주 피사체 선택 실패 - {os.path.basename(image_path)}")
+         # 주 피사체 선택 실패 시 종료
          return
     subj_bbox, ref_center = selection_result
-    # print(f"INFO: 주 피사체 선택 완료 - {os.path.basename(image_path)}") # 상세 로그 필요 시 주석 해제
 
+    # 출력 파일명 생성 준비
     base, ext = os.path.splitext(os.path.basename(image_path))
-    # ratio_str 생성 시 args.ratio가 None일 경우 처리
-    target_ratio_str = args.ratio if args.ratio else "Orig"
+    target_ratio_str = args.ratio if args.ratio else "Orig" # 비율 문자열
     ratio_str = f"_r{target_ratio_str.replace(':', '-')}"
-    ref_str = f"_ref{args.reference}"
+    ref_str = f"_ref{args.reference}" # 기준점 문자열
 
+    # 처리할 구도 규칙 목록
     crop_configs = [('thirds', OUTPUT_SUFFIX_THIRDS), ('golden', OUTPUT_SUFFIX_GOLDEN)]
     saved_count = 0
+
+    # 각 구도 규칙에 대해 크롭 및 저장
     for rule_name, suffix in crop_configs:
+        # 구도 교차점 계산
         rule_points = get_rule_points(img_w, img_h, rule_name)
-        target_ratio_float = parse_aspect_ratio(args.ratio) # 명령줄 인자 사용
+        # 목표 비율 파싱 (float 또는 None)
+        target_ratio_float = parse_aspect_ratio(args.ratio)
+        # 최적 크롭 영역 계산
         x1, y1, x2, y2 = calculate_optimal_crop((img_h, img_w), ref_center, rule_points, target_ratio_float)
 
+        # 유효한 크롭 영역이 계산된 경우
         if x1 < x2 and y1 < y2:
-            cropped_img = img[y1:y2, x1:x2]
+            # OpenCV 이미지(BGR)에서 크롭 영역 추출
+            cropped_img_bgr = img[y1:y2, x1:x2]
+            # 출력 파일 경로 생성
             out_filename = f"{base}{suffix}{ratio_str}{ref_str}{ext}"
             out_path = os.path.join(output_dir, out_filename)
             try:
-                cv2.imwrite(out_path, cropped_img)
-                saved_count += 1
-                # print(f"INFO: 저장 완료 - {out_filename}") # 성공 시 로그 생략 가능
-            except Exception as e:
-                print(f"ERROR: 크롭 이미지 저장 실패 ({out_path}): {e}")
-        # else: print(f"WARN: '{rule_name}' 규칙 유효 크롭 영역 생성 실패 - {os.path.basename(image_path)}")
+                # --- PIL을 사용하여 EXIF 보존하며 저장 ---
+                # 크롭된 OpenCV 이미지(BGR)를 PIL 이미지(RGB)로 변환
+                cropped_img_rgb = cv2.cvtColor(cropped_img_bgr, cv2.COLOR_BGR2RGB)
+                pil_cropped_img = Image.fromarray(cropped_img_rgb)
 
-    # return saved_count # 배치 처리 시 성공 카운트 반환 등에 사용 가능
+                # EXIF 데이터가 있으면 함께 저장, 없으면 그냥 저장
+                if exif_data:
+                    pil_cropped_img.save(out_path, exif=exif_data)
+                else:
+                    pil_cropped_img.save(out_path)
+                # --- 저장 로직 끝 ---
+
+                saved_count += 1
+            except Exception as e:
+                # 저장 중 오류 발생 시 에러 메시지 출력
+                print(f"ERROR: 크롭 이미지 저장 실패 ({out_path}): {e}")
+
+    # 함수 종료 (필요시 저장된 파일 수 반환 가능)
+    # return saved_count
 
 # --- 명령줄 인터페이스 및 실행 ---
 
 def main():
+    # 명령줄 인수 파서 설정
     parser = argparse.ArgumentParser(
         description=f"{__doc__}\n버전: {__version__}", # Docstring과 버전 정보 포함
-        formatter_class=argparse.RawTextHelpFormatter
+        formatter_class=argparse.RawTextHelpFormatter # 도움말 형식 유지
     )
+    # 입력 경로 인수 (필수)
     parser.add_argument("input_path", help="처리할 이미지 파일 또는 디렉토리 경로.")
+    # 출력 디렉토리 인수 (선택, 기본값 있음)
     parser.add_argument("-o", "--output_dir", default=DEFAULT_OUTPUT_DIR, help=f"결과 저장 디렉토리 (기본값: {DEFAULT_OUTPUT_DIR})")
+    # 주 피사체 선택 방법 인수 (선택, 기본값 있음)
     parser.add_argument("-m", "--method", choices=['largest', 'center'], default=DEFAULT_SELECTION_METHOD, help=f"주 피사체 선택 방법 (기본값: {DEFAULT_SELECTION_METHOD})\n  largest: 가장 큰 얼굴\n  center: 이미지 중앙에 가장 가까운 얼굴")
+    # 구도 기준점 타입 인수 (선택, 기본값 있음)
     parser.add_argument("-ref", "--reference", choices=['eye', 'box'], default=DEFAULT_REFERENCE_POINT, help=f"구도 기준점 타입 (기본값: {DEFAULT_REFERENCE_POINT})\n  eye: 양 눈의 중심\n  box: 얼굴 경계 상자의 중심")
+    # 목표 크롭 비율 인수 (선택, 기본값 None)
     parser.add_argument("-r", "--ratio", type=str, default=DEFAULT_ASPECT_RATIO, help="목표 크롭 비율 (예: '16:9', '1.0', '4:3', 'None').\n'None' 또는 미지정 시 원본 비율 유지 (기본값).")
+    # 얼굴 감지 신뢰도 임계값 인수 (선택, 기본값 있음)
     parser.add_argument("-c", "--confidence", type=float, default=DEFAULT_CONFIDENCE_THRESHOLD, help=f"얼굴 감지 최소 신뢰도 (기본값: {DEFAULT_CONFIDENCE_THRESHOLD})")
+    # 얼굴 감지 NMS 임계값 인수 (선택, 기본값 있음)
     parser.add_argument("-n", "--nms", type=float, default=DEFAULT_NMS_THRESHOLD, help=f"얼굴 감지 NMS 임계값 (기본값: {DEFAULT_NMS_THRESHOLD})")
-    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}') # 버전 표시 인수 추가
+    # 버전 정보 표시 인수
+    parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
 
+    # 명령줄 인수 파싱
     args = parser.parse_args()
 
+    # DNN 모델 파일 다운로드 시도
     if not download_model(YUNET_MODEL_URL, YUNET_MODEL_PATH):
         print("ERROR: DNN 모델 파일이 준비되지 않아 처리를 중단합니다.")
         return
 
+    # 출력 디렉토리 생성 시도
     if not os.path.exists(args.output_dir):
         try:
             os.makedirs(args.output_dir)
@@ -286,25 +397,33 @@ def main():
             print(f"ERROR: 출력 디렉토리 생성 실패: {e}")
             return
 
+    # 입력 경로가 파일인지 디렉토리인지 확인하고 처리
     if os.path.isfile(args.input_path):
+        # 단일 파일 처리
         process_image(args.input_path, args.output_dir, args)
-        print(f"INFO: 단일 파일 처리 완료 - {os.path.basename(args.input_path)}") # 완료 메시지 추가
+        print(f"INFO: 단일 파일 처리 완료 - {os.path.basename(args.input_path)}")
     elif os.path.isdir(args.input_path):
+        # 디렉토리 처리
         print(f"INFO: 디렉토리 처리 시작 - {args.input_path}")
-        image_files = [f for f in os.listdir(args.input_path) if f.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff'))]
-        
+        # 지원하는 이미지 확장자 목록
+        supported_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif')
+        # 디렉토리 내 이미지 파일 목록 생성
+        image_files = [f for f in os.listdir(args.input_path) if f.lower().endswith(supported_extensions)]
+
         if not image_files:
             print("INFO: 처리할 이미지 파일이 디렉토리에 없습니다.")
             return
 
-        # tqdm 적용하여 파일 처리 진행 표시
-        for filename in tqdm(image_files, desc="Processing images"):
+        # tqdm 사용하여 진행률 표시하며 파일 처리
+        for filename in tqdm(image_files, desc="이미지 처리 중"):
             file_path = os.path.join(args.input_path, filename)
             process_image(file_path, args.output_dir, args)
-            
+
         print(f"INFO: 디렉토리 처리 완료 ({len(image_files)}개 파일 처리 시도)")
     else:
+        # 입력 경로가 유효하지 않은 경우 에러 메시지 출력
         print(f"ERROR: 입력 경로를 찾을 수 없습니다: {args.input_path}")
 
 if __name__ == "__main__":
+    # 스크립트 직접 실행 시 main 함수 호출
     main()
