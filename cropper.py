@@ -7,7 +7,7 @@
 - logging 모듈 사용
 - 덮어쓰기, 출력 형식, JPEG 품질 제어 옵션 추가
 - 최소 얼굴 크기, 크롭 패딩, 구도 규칙 선택 옵션 추가
-- 병렬 처리 기능 추가 (디렉토리 처리 시)
+- 병렬 처리 기능 추가 (ProcessPoolExecutor 사용)
 - 오류 요약 보고 기능 추가
 - 설정 파일 지원 (--config) 추가
 - Dry Run 모드 (--dry-run) 추가
@@ -18,7 +18,7 @@ DNN 모델(YuNet)을 사용하여 얼굴 및 랜드마크를 감지합니다.
 필요한 라이브러리:
 pip install opencv-python numpy Pillow tqdm
 
-버전: 1.6.2 (ImportError 수정)
+버전: 1.6.3 (ProcessPoolExecutor 적용 및 안정성 향상)
 """
 import cv2
 import numpy as np
@@ -29,7 +29,7 @@ import argparse
 import logging
 import time
 import json # 설정 파일 처리를 위해 추가
-import concurrent.futures
+import concurrent.futures # ProcessPoolExecutor 사용
 # 'Exif' 임포트 제거
 from PIL import Image, UnidentifiedImageError
 from typing import Tuple, List, Optional, Dict, Any, Union
@@ -44,7 +44,7 @@ except ImportError:
         logging.info("tqdm 라이브러리가 설치되지 않아 진행 표시줄을 생략합니다. (pip install tqdm)")
         return iterable
 
-__version__ = "1.6.2" # 버전 업데이트
+__version__ = "1.6.3" # 버전 업데이트
 
 # --- 기본 설정값 ---
 DEFAULT_CONFIG = {
@@ -68,7 +68,7 @@ DEFAULT_CONFIG = {
 
 # DNN 모델 정보
 YUNET_MODEL_URL = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
-YUNET_MODEL_PATH = "face_detection_yunet_2023mar.onnx"
+YUNET_MODEL_PATH = "face_detection_yunet_2023mar.onnx" # 모델 파일 경로 전역 변수
 
 # 결과 파일명 접미사
 OUTPUT_SUFFIX_THIRDS = '_thirds'
@@ -76,9 +76,19 @@ OUTPUT_SUFFIX_GOLDEN = '_golden'
 # --- 설정값 끝 ---
 
 # --- 로깅 설정 ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+# 기본 로깅 핸들러 설정 (메인 프로세스용)
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(processName)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+log_handler = logging.StreamHandler()
+log_handler.setFormatter(log_formatter)
+logger = logging.getLogger()
+# 기존 핸들러 제거 (중복 로깅 방지)
+if logger.hasHandlers():
+    logger.handlers.clear()
+logger.addHandler(log_handler)
+logger.setLevel(logging.INFO) # 기본 레벨 INFO
 
 # --- 유틸리티 함수 ---
+# (download_model, parse_aspect_ratio, load_config 함수는 이전 버전과 동일)
 def download_model(url: str, file_path: str) -> bool:
     """지정된 URL에서 모델 파일을 다운로드합니다."""
     if not os.path.exists(file_path):
@@ -92,7 +102,9 @@ def download_model(url: str, file_path: str) -> bool:
             logging.error(f"       수동으로 다음 URL에서 다운로드 받아 '{file_path}'로 저장해주세요: {url}")
             return False
     else:
-        logging.info(f"모델 파일 '{os.path.basename(file_path)}'이(가) 이미 존재합니다.")
+        # 메인 프로세스에서만 이 로그가 유용함
+        if os.getpid() == main_process_pid:
+             logging.info(f"모델 파일 '{os.path.basename(file_path)}'이(가) 이미 존재합니다.")
         return True
 
 def parse_aspect_ratio(ratio_str: Optional[str]) -> Optional[float]:
@@ -139,6 +151,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
         return {}
 
 # --- 핵심 로직 함수 ---
+# (detect_faces_dnn, select_main_subject, get_rule_points, calculate_optimal_crop, apply_padding 함수는 이전 버전과 동일)
 def detect_faces_dnn(detector: cv2.FaceDetectorYN, image: np.ndarray, min_w: int, min_h: int) -> List[Dict[str, Any]]:
     """
     사전 로드된 DNN 모델(YuNet)을 사용하여 얼굴 목록을 감지합니다.
@@ -156,6 +169,7 @@ def detect_faces_dnn(detector: cv2.FaceDetectorYN, image: np.ndarray, min_w: int
 
     try:
         detector.setInputSize((img_w, img_h))
+        # 얼굴 감지 수행 - 여기가 오류 발생 지점일 수 있음
         faces = detector.detect(image)
 
         if faces[1] is not None:
@@ -190,9 +204,13 @@ def detect_faces_dnn(detector: cv2.FaceDetectorYN, image: np.ndarray, min_w: int
                         'confidence': confidence
                     })
     except cv2.error as e:
-        logging.error(f"OpenCV 오류 발생 (얼굴 감지 중): {e}")
+        # OpenCV 관련 오류 로깅 강화
+        logging.error(f"OpenCV 오류 발생 (얼굴 감지 중 - 이미지 크기: {img_w}x{img_h}): {e}")
+        # 오류 발생 시 빈 리스트 반환
+        return []
     except Exception as e:
         logging.error(f"DNN 얼굴 감지 중 예상치 못한 문제 발생: {e}")
+        return []
     return detected_subjects
 
 
@@ -345,32 +363,29 @@ def apply_padding(crop_coords: Tuple[int, int, int, int], img_shape: Tuple[int, 
 
 # --- 메인 처리 함수 ---
 
-def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN, args: argparse.Namespace) -> Dict[str, Any]:
+def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN, args_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
     단일 이미지를 처리하여 크롭된 결과를 저장하거나 Dry Run 모드에서 로그를 남깁니다.
     성공/실패 상태와 메시지를 포함하는 딕셔너리를 반환합니다.
+    (Namespace 대신 Dict를 받도록 수정)
     """
     filename = os.path.basename(image_path)
     logging.debug(f"처리 시작: {filename}")
     start_time = time.time()
-    is_dry_run = getattr(args, 'dry_run', False)
+    is_dry_run = args_dict.get('dry_run', False)
     status = {'filename': filename, 'success': False, 'saved_files': 0, 'message': '', 'dry_run': is_dry_run}
     exif_data = None
     original_ext = os.path.splitext(image_path)[1].lower()
 
     try:
         with Image.open(image_path) as pil_img:
-            # --- EXIF 데이터 추출 (오류 처리 강화) ---
             try:
                 exif_data = pil_img.info.get('exif')
                 if exif_data:
-                    # Exif.load() 제거 - 직접적인 유효성 검사 대신 저장 시도
                     logging.debug(f"{filename}: EXIF 데이터 발견됨.")
             except Exception as exif_err:
-                # EXIF 관련 오류 발생 시 경고하고 데이터는 None으로 설정
                 logging.warning(f"{filename}: EXIF 데이터 처리 중 오류: {exif_err}. EXIF 없이 저장됩니다.")
                 exif_data = None
-            # --- EXIF 처리 끝 ---
 
             pil_img_rgb = pil_img.convert('RGB')
             img = np.array(pil_img_rgb)[:, :, ::-1].copy()
@@ -395,14 +410,14 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
         return status
 
     # 얼굴 감지
-    detected_faces = detect_faces_dnn(detector, img, args.min_face_width, args.min_face_height)
+    detected_faces = detect_faces_dnn(detector, img, args_dict['min_face_width'], args_dict['min_face_height'])
     if not detected_faces:
         status['message'] = "유효한 얼굴 감지 실패 (최소 크기 조건 포함)."
         logging.info(f"{filename}: {status['message']}")
         return status
 
     # 주 피사체 선택
-    selection_result = select_main_subject(detected_faces, (img_h, img_w), args.method, args.reference)
+    selection_result = select_main_subject(detected_faces, (img_h, img_w), args_dict['method'], args_dict['reference'])
     if not selection_result:
          status['message'] = "주 피사체 선택 실패."
          logging.warning(f"{filename}: {status['message']}")
@@ -411,27 +426,27 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
 
     # 출력 파일명 및 확장자 설정
     base = os.path.splitext(filename)[0]
-    target_ratio_str = str(args.ratio) if args.ratio is not None else "Orig"
+    target_ratio_str = str(args_dict['ratio']) if args_dict['ratio'] is not None else "Orig"
     ratio_str = f"_r{target_ratio_str.replace(':', '-')}"
-    ref_str = f"_ref{args.reference}"
-    output_format = args.output_format.lower() if args.output_format else None
+    ref_str = f"_ref{args_dict['reference']}"
+    output_format = args_dict['output_format'].lower() if args_dict['output_format'] else None
     if output_format:
         output_ext = f".{output_format.lstrip('.')}"
         if output_ext[1:] not in Image.registered_extensions():
-             logging.warning(f"{filename}: 지원되지 않는 출력 형식 '{args.output_format}'. 원본 형식 '{original_ext}' 사용.")
+             logging.warning(f"{filename}: 지원되지 않는 출력 형식 '{args_dict['output_format']}'. 원본 형식 '{original_ext}' 사용.")
              output_ext = original_ext
     else:
         output_ext = original_ext
 
     # 적용할 구도 규칙 결정
     rules_to_apply = []
-    if args.rule == 'thirds' or args.rule == 'both':
+    if args_dict['rule'] == 'thirds' or args_dict['rule'] == 'both':
         rules_to_apply.append(('thirds', OUTPUT_SUFFIX_THIRDS))
-    if args.rule == 'golden' or args.rule == 'both':
+    if args_dict['rule'] == 'golden' or args_dict['rule'] == 'both':
         rules_to_apply.append(('golden', OUTPUT_SUFFIX_GOLDEN))
 
     if not rules_to_apply:
-        status['message'] = f"적용할 구도 규칙이 선택되지 않았습니다 ('{args.rule}')."
+        status['message'] = f"적용할 구도 규칙이 선택되지 않았습니다 ('{args_dict['rule']}')."
         logging.warning(f"{filename}: {status['message']}")
         return status
 
@@ -440,11 +455,11 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
     # 각 구도 규칙에 대해 크롭 및 저장/Dry Run
     for rule_name, suffix in rules_to_apply:
         rule_points = get_rule_points(img_w, img_h, rule_name)
-        target_ratio_float = parse_aspect_ratio(args.ratio)
+        target_ratio_float = parse_aspect_ratio(args_dict['ratio'])
         crop_coords = calculate_optimal_crop((img_h, img_w), ref_center, rule_points, target_ratio_float)
 
         if crop_coords:
-            padded_coords = apply_padding(crop_coords, (img_h, img_w), args.padding_percent)
+            padded_coords = apply_padding(crop_coords, (img_h, img_w), args_dict['padding_percent'])
             x1, y1, x2, y2 = padded_coords
 
             if x1 >= x2 or y1 >= y2:
@@ -456,7 +471,7 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
             out_filename = f"{base}{suffix}{ratio_str}{ref_str}{output_ext}"
             out_path = os.path.join(output_dir, out_filename)
 
-            if not args.overwrite and os.path.exists(out_path) and not is_dry_run:
+            if not args_dict['overwrite'] and os.path.exists(out_path) and not is_dry_run:
                 logging.info(f"{filename}: 파일이 이미 존재하고 덮어쓰기 비활성화됨 - 건너<0xEB><0x84><0x8E>기: {out_filename}")
                 continue
 
@@ -472,11 +487,10 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
                     cropped_img_rgb = cv2.cvtColor(cropped_img_bgr, cv2.COLOR_BGR2RGB)
                     pil_cropped_img = Image.fromarray(cropped_img_rgb)
                     save_options = {}
-                    # 저장 시 EXIF 데이터(bytes) 전달
                     if exif_data and isinstance(exif_data, bytes):
                         save_options['exif'] = exif_data
                     if output_ext.lower() in ['.jpg', '.jpeg']:
-                        save_options['quality'] = args.jpeg_quality
+                        save_options['quality'] = args_dict['jpeg_quality']
                         save_options['optimize'] = True
                         save_options['progressive'] = True
                     pil_cropped_img.save(out_path, **save_options)
@@ -488,7 +502,8 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
                      crop_errors.append(msg)
                 except Exception as e:
                     msg = f"크롭 이미지 저장 중 오류 ({out_filename}): {e}"
-                    logging.error(f"{filename}: {msg}", exc_info=args.verbose)
+                    # 상세 로깅 시 스택 트레이스 포함 (args_dict 사용)
+                    logging.error(f"{filename}: {msg}", exc_info=args_dict.get('verbose', False))
                     crop_errors.append(msg)
         else:
              msg = f"'{rule_name}' 규칙: 유효 크롭 영역 생성 실패."
@@ -515,17 +530,41 @@ def process_image(image_path: str, output_dir: str, detector: cv2.FaceDetectorYN
 
 # --- 병렬 처리 래퍼 함수 ---
 def process_image_wrapper(args_tuple):
-    """ concurrent.futures.Executor.map을 위한 래퍼 함수 """
-    image_path, output_dir, detector, args_namespace = args_tuple
+    """ concurrent.futures.ProcessPoolExecutor를 위한 래퍼 함수 """
+    # 각 프로세스에서 필요한 것들만 받도록 수정
+    image_path, output_dir, model_path, args_dict = args_tuple
+    # 각 프로세스에서 로거 재설정 (선택적이지만 권장)
+    process_logger = logging.getLogger()
+    if not process_logger.hasHandlers(): # 핸들러 중복 추가 방지
+        process_handler = logging.StreamHandler()
+        process_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(processName)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        process_handler.setFormatter(process_formatter)
+        process_logger.addHandler(process_handler)
+        process_logger.setLevel(logging.DEBUG if args_dict.get('verbose') else logging.INFO)
+
+    detector = None # 감지기 초기화
     try:
-        return process_image(image_path, output_dir, detector, args_namespace)
+        # --- 각 프로세스에서 감지기 로드 ---
+        logging.debug(f"프로세스 시작: 모델 로딩 중 ({os.path.basename(model_path)})...")
+        detector = cv2.FaceDetectorYN.create(model_path, "", (0, 0))
+        detector.setScoreThreshold(args_dict['confidence'])
+        detector.setNMSThreshold(args_dict['nms'])
+        logging.debug("프로세스 시작: 모델 로딩 완료.")
+        # --- 감지기 로드 끝 ---
+
+        # 실제 이미지 처리 함수 호출 (detector 전달)
+        return process_image(image_path, output_dir, detector, args_dict)
+
     except Exception as e:
+        # process_image 내부에서 처리되지 않은 예외 또는 모델 로딩 실패 처리
         filename = os.path.basename(image_path)
-        logging.error(f"{filename}: 처리 중 심각한 오류 발생: {e}", exc_info=True)
-        return {'filename': filename, 'success': False, 'saved_files': 0, 'message': f"처리 중 심각한 오류: {e}", 'dry_run': getattr(args_namespace, 'dry_run', False)}
+        logging.error(f"{filename}: 처리 중 심각한 오류 발생 (래퍼): {e}", exc_info=True)
+        return {'filename': filename, 'success': False, 'saved_files': 0, 'message': f"처리 중 심각한 오류 (래퍼): {e}", 'dry_run': args_dict.get('dry_run', False)}
 
 
 # --- 명령줄 인터페이스 및 실행 ---
+# 메인 프로세스 PID 저장 (로그 중복 방지용)
+main_process_pid = os.getpid()
 
 def main():
     # 명령줄 인수 파서 설정
@@ -604,73 +643,76 @@ def main():
                 elif key != 'config':
                      config[key] = value
 
-    # 최종 설정을 Namespace 객체로 변환
-    final_args = argparse.Namespace(**config)
+    # 최종 설정을 Dictionary로 저장 (ProcessPoolExecutor에 전달하기 위함)
+    final_args_dict = config
 
-    # 로깅 레벨 설정
-    if final_args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+    # 로깅 레벨 설정 (메인 프로세스)
+    if final_args_dict['verbose']:
+        logger.setLevel(logging.DEBUG)
         logging.debug("상세 로깅 활성화됨.")
-        logging.debug(f"최종 적용 설정: {vars(final_args)}")
+        logging.debug(f"최종 적용 설정: {final_args_dict}")
     else:
-         logging.getLogger().setLevel(logging.INFO)
+         logger.setLevel(logging.INFO)
 
-    if final_args.dry_run:
+    if final_args_dict['dry_run']:
         logging.info("***** Dry Run 모드로 실행 중입니다. 실제 파일은 저장되지 않습니다. *****")
 
     # --- 최종 인수 유효성 검사 ---
-    if final_args.min_face_width < 0:
-        logging.warning(f"최소 얼굴 너비는 0 이상이어야 합니다 ({final_args.min_face_width}). 기본값 {DEFAULT_CONFIG['min_face_width']} 사용.")
-        final_args.min_face_width = DEFAULT_CONFIG['min_face_width']
-    if final_args.min_face_height < 0:
-        logging.warning(f"최소 얼굴 높이는 0 이상이어야 합니다 ({final_args.min_face_height}). 기본값 {DEFAULT_CONFIG['min_face_height']} 사용.")
-        final_args.min_face_height = DEFAULT_CONFIG['min_face_height']
-    if final_args.padding_percent < 0:
-        logging.warning(f"패딩 비율은 0 이상이어야 합니다 ({final_args.padding_percent}). 0 사용.")
-        final_args.padding_percent = 0.0
-    if final_args.workers < 0:
-        logging.warning(f"작업자 수는 0 이상이어야 합니다 ({final_args.workers}). 기본값 {DEFAULT_CONFIG['workers']} 사용.")
-        final_args.workers = DEFAULT_CONFIG['workers']
+    if final_args_dict['min_face_width'] < 0:
+        logging.warning(f"최소 얼굴 너비는 0 이상이어야 합니다 ({final_args_dict['min_face_width']}). 기본값 {DEFAULT_CONFIG['min_face_width']} 사용.")
+        final_args_dict['min_face_width'] = DEFAULT_CONFIG['min_face_width']
+    if final_args_dict['min_face_height'] < 0:
+        logging.warning(f"최소 얼굴 높이는 0 이상이어야 합니다 ({final_args_dict['min_face_height']}). 기본값 {DEFAULT_CONFIG['min_face_height']} 사용.")
+        final_args_dict['min_face_height'] = DEFAULT_CONFIG['min_face_height']
+    if final_args_dict['padding_percent'] < 0:
+        logging.warning(f"패딩 비율은 0 이상이어야 합니다 ({final_args_dict['padding_percent']}). 0 사용.")
+        final_args_dict['padding_percent'] = 0.0
+    if final_args_dict['workers'] < 0:
+        logging.warning(f"작업자 수는 0 이상이어야 합니다 ({final_args_dict['workers']}). 기본값 {DEFAULT_CONFIG['workers']} 사용.")
+        final_args_dict['workers'] = DEFAULT_CONFIG['workers']
 
     # --- 준비 단계 ---
+    # DNN 모델 파일 다운로드 (메인 프로세스에서만)
     if not download_model(YUNET_MODEL_URL, YUNET_MODEL_PATH):
         logging.critical("DNN 모델 파일이 준비되지 않아 처리를 중단합니다.")
         return
 
-    try:
-        logging.debug("얼굴 감지 모델 로딩 중...")
-        global_detector = cv2.FaceDetectorYN.create(YUNET_MODEL_PATH, "", (0, 0))
-        global_detector.setScoreThreshold(final_args.confidence)
-        global_detector.setNMSThreshold(final_args.nms)
-        logging.debug("얼굴 감지 모델 로딩 완료.")
-    except cv2.error as e:
-        logging.critical(f"얼굴 감지 모델 로드 실패: {e}")
-        return
-    except Exception as e:
-        logging.critical(f"얼굴 감지 모델 로드 중 예상치 못한 오류: {e}")
-        return
-
-    if not final_args.dry_run:
-        if not os.path.exists(final_args.output_dir):
+    # 출력 디렉토리 생성 (Dry Run 모드가 아닐 때만)
+    if not final_args_dict['dry_run']:
+        output_dir = final_args_dict['output_dir']
+        if not os.path.exists(output_dir):
             try:
-                os.makedirs(final_args.output_dir)
-                logging.info(f"출력 디렉토리 생성: {final_args.output_dir}")
+                os.makedirs(output_dir)
+                logging.info(f"출력 디렉토리 생성: {output_dir}")
             except OSError as e:
                 logging.critical(f"출력 디렉토리 생성 실패: {e}")
                 return
-        elif not os.path.isdir(final_args.output_dir):
-             logging.critical(f"지정된 출력 경로 '{final_args.output_dir}'는 디렉토리가 아닙니다.")
+        elif not os.path.isdir(output_dir):
+             logging.critical(f"지정된 출력 경로 '{output_dir}'는 디렉토리가 아닙니다.")
              return
     else:
-         logging.info(f"[DRY RUN] 출력 디렉토리 확인/생성 건너<0xEB><0x84><0x8E>기: {final_args.output_dir}")
+         logging.info(f"[DRY RUN] 출력 디렉토리 확인/생성 건너<0xEB><0x84><0x8E>기: {final_args_dict['output_dir']}")
 
     # --- 이미지 처리 ---
     input_path = args.input_path
     if os.path.isfile(input_path):
+        # 단일 파일 처리 (병렬 처리 불필요, 메인 프로세스에서 감지기 로드)
         logging.info(f"단일 파일 처리 시작: {input_path}")
-        result = process_image(input_path, final_args.output_dir, global_detector, final_args)
-        logging.info(f"단일 파일 처리 완료. 결과: {result['message']}")
+        try:
+            detector = cv2.FaceDetectorYN.create(YUNET_MODEL_PATH, "", (0, 0))
+            detector.setScoreThreshold(final_args_dict['confidence'])
+            detector.setNMSThreshold(final_args_dict['nms'])
+            # Namespace 객체로 변환하여 전달 (기존 함수 호환성)
+            final_args_ns = argparse.Namespace(**final_args_dict)
+            result = process_image(input_path, final_args_dict['output_dir'], detector, final_args_ns)
+            logging.info(f"단일 파일 처리 완료. 결과: {result['message']}")
+        except cv2.error as e:
+             logging.critical(f"얼굴 감지 모델 로드 실패 (단일 파일 처리): {e}")
+        except Exception as e:
+             logging.critical(f"단일 파일 처리 중 오류 발생: {e}", exc_info=True)
+
     elif os.path.isdir(input_path):
+        # 디렉토리 처리
         logging.info(f"디렉토리 처리 시작: {input_path}")
         supported_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif')
         try:
@@ -684,8 +726,10 @@ def main():
             logging.info("처리할 이미지 파일이 디렉토리에 없습니다.")
             return
 
-        num_workers = final_args.workers if final_args.workers > 0 else 1
-        logging.info(f"총 {len(image_files)}개의 이미지 파일 처리 시작 (작업자 수: {num_workers})...")
+        num_workers = final_args_dict['workers'] if final_args_dict['workers'] > 0 else 1
+        # ProcessPoolExecutor 사용 시 실제 프로세스 수 제한 가능성 고려
+        actual_workers = min(num_workers, os.cpu_count()) if num_workers > 0 else 1
+        logging.info(f"총 {len(image_files)}개의 이미지 파일 처리 시작 (요청 작업자: {num_workers}, 실제 최대 작업자: {actual_workers})...")
         total_start_time = time.time()
         results = []
         processed_count = 0
@@ -693,22 +737,46 @@ def main():
         total_saved_files = 0
         failed_files = []
 
-        if final_args.workers > 1:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=final_args.workers) as executor:
-                tasks = [(img_path, final_args.output_dir, global_detector, final_args) for img_path in image_files]
+        # 병렬 처리 또는 순차 처리
+        if num_workers > 1:
+             # ProcessPoolExecutor 사용
+            with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as executor:
+                # 각 작업에 필요한 인자들을 튜플 리스트로 생성
+                # detector 객체 대신 model_path와 설정(dict) 전달
+                tasks = [(img_path, final_args_dict['output_dir'], YUNET_MODEL_PATH, final_args_dict) for img_path in image_files]
                 try:
                     results_iterator = executor.map(process_image_wrapper, tasks)
                     if TQDM_AVAILABLE:
                          results = list(tqdm(results_iterator, total=len(tasks), desc="이미지 처리 중"))
                     else:
-                         results = list(results_iterator)
+                         # tqdm 없을 시 진행 상황 로깅 (간단하게)
+                         temp_results = []
+                         for i, result in enumerate(results_iterator):
+                              temp_results.append(result)
+                              if (i + 1) % 50 == 0: # 50개마다 로그 출력
+                                   logging.info(f"진행 상황: {i + 1}/{len(tasks)} 파일 처리 완료...")
+                         results = temp_results
                 except Exception as e:
                      logging.critical(f"병렬 처리 중 심각한 오류 발생: {e}", exc_info=True)
         else:
+            # 순차 처리 (메인 프로세스에서 감지기 로드)
             logging.info("순차 처리 모드로 실행합니다.")
-            iterator = tqdm(image_files, desc="이미지 처리 중") if TQDM_AVAILABLE else image_files
-            for img_path in iterator:
-                 results.append(process_image_wrapper((img_path, final_args.output_dir, global_detector, final_args)))
+            try:
+                detector = cv2.FaceDetectorYN.create(YUNET_MODEL_PATH, "", (0, 0))
+                detector.setScoreThreshold(final_args_dict['confidence'])
+                detector.setNMSThreshold(final_args_dict['nms'])
+                iterator = tqdm(image_files, desc="이미지 처리 중") if TQDM_AVAILABLE else image_files
+                # Namespace 객체로 변환하여 전달
+                final_args_ns = argparse.Namespace(**final_args_dict)
+                for img_path in iterator:
+                     results.append(process_image(img_path, final_args_dict['output_dir'], detector, final_args_ns))
+            except cv2.error as e:
+                 logging.critical(f"얼굴 감지 모델 로드 실패 (순차 처리): {e}")
+                 return # 순차 처리 시 모델 로드 실패하면 중단
+            except Exception as e:
+                 logging.critical(f"순차 처리 중 오류 발생: {e}", exc_info=True)
+                 return
+
 
         # 결과 집계 및 요약
         for result in results:
@@ -721,14 +789,14 @@ def main():
 
         total_end_time = time.time()
         total_processing_time = total_end_time - total_start_time
-        action_verb = "시뮬레이션" if final_args.dry_run else "처리"
+        action_verb = "시뮬레이션" if final_args_dict['dry_run'] else "처리"
 
         logging.info("-" * 30)
         logging.info(f"          디렉토리 {action_verb} 결과 요약          ")
         logging.info("-" * 30)
         logging.info(f"총 {action_verb} 시도 파일 수: {processed_count} / {len(image_files)}")
         logging.info(f"성공적으로 {action_verb}된 파일 수: {success_count}")
-        logging.info(f"총 {'저장 예정' if final_args.dry_run else '저장된'} 크롭 이미지 수: {total_saved_files}")
+        logging.info(f"총 {'저장 예정' if final_args_dict['dry_run'] else '저장된'} 크롭 이미지 수: {total_saved_files}")
         logging.info(f"실패 또는 부분 실패 파일 수: {len(failed_files)}")
         if failed_files:
             logging.info("실패 상세 정보 (오류 로그 확인):")
@@ -745,4 +813,6 @@ def main():
         logging.critical(f"입력 경로를 찾을 수 없거나 유효하지 않습니다: {input_path}")
 
 if __name__ == "__main__":
+    # 메인 프로세스 PID 저장 (자식 프로세스 로깅 구분용)
+    main_process_pid = os.getpid()
     main()
