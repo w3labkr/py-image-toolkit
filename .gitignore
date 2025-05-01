@@ -257,6 +257,8 @@ $RECYCLE.BIN/
 # Ignore all files in the input and output folders
 input/
 output/
+cropped/
+resized/
 
 # Yunet files
 *.onnx
