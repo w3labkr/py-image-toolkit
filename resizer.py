@@ -4,7 +4,7 @@ import sys
 import argparse # For command line argument processing
 import logging # For logging functionality
 from dataclasses import dataclass, field # For configuration class
-from typing import Dict, Any, Optional, Tuple # For type hints
+from typing import Dict, Any, Optional, Tuple, List # For type hints
 import multiprocessing # For parallel processing
 
 # --- Third-party Library Imports ---
@@ -22,7 +22,7 @@ logger.addHandler(log_console_handler)
 
 
 # --- Constants ---
-SCRIPT_VERSION = "3.3" # Version update (Cleaned up unused code/comments)
+SCRIPT_VERSION = "3.5" # Version update (WEBP lossless, code cleanup, help text clarification)
 
 try:
     _PIL_RESAMPLE_FILTERS = {
@@ -49,8 +49,11 @@ FILTER_NAMES = {
 SUPPORTED_OUTPUT_FORMATS = {
     "original": "Keep Original", "png": "PNG", "jpg": "JPG", "webp": "WEBP",
 }
-SUPPORTED_INPUT_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')
+# Default supported extensions if no include/exclude filters are applied
+DEFAULT_SUPPORTED_INPUT_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')
 
+# Special message for skipped files due to overwrite policy
+SKIPPED_EXISTING_MSG = "SKIPPED_EXISTING_FILE_POLICY"
 
 # --- Global Helper for Multiprocessing ---
 # This function must be defined at the top level of a module to be picklable by multiprocessing.
@@ -81,6 +84,11 @@ class Config:
     recursive: bool = False
     quality: Optional[int] = None
     verbose: bool = False
+    strip_exif: bool = False
+    overwrite_policy: str = "rename"
+    include_extensions: Optional[List[str]] = None
+    exclude_extensions: Optional[List[str]] = None
+    webp_lossless: bool = False # New: Option for WEBP lossless compression
 
     absolute_input_dir: str = field(init=False, default='')
     absolute_output_dir: str = field(init=False, default='')
@@ -90,10 +98,19 @@ class Config:
     def __post_init__(self):
         self._validate_paths()
         self._prepare_options()
-        # Set logger level based on verbose flag from config
+        self._normalize_extension_filters()
         if self.verbose:
             logger.setLevel(logging.DEBUG)
             logger.debug("Verbose logging enabled via Config.")
+
+    def _normalize_extension_filters(self):
+        """Normalizes include/exclude extensions to lowercase and ensures they start with a dot."""
+        if self.include_extensions:
+            self.include_extensions = [f".{ext.lower().lstrip('.')}" for ext in self.include_extensions]
+            logger.debug(f"Normalized include_extensions: {self.include_extensions}")
+        if self.exclude_extensions:
+            self.exclude_extensions = [f".{ext.lower().lstrip('.')}" for ext in self.exclude_extensions]
+            logger.debug(f"Normalized exclude_extensions: {self.exclude_extensions}")
 
 
     def _validate_paths(self):
@@ -116,13 +133,12 @@ class Config:
             sys.exit(1)
 
         try:
-            # Check if output directory is inside input directory when recursive is on
             rel_path = os.path.relpath(self.absolute_output_dir, start=self.absolute_input_dir)
             if self.recursive and not rel_path.startswith(os.pardir) and rel_path != '.':
                  if os.path.commonpath([self.absolute_input_dir]) == os.path.commonpath([self.absolute_input_dir, self.absolute_output_dir]):
                     logger.critical("(!) Error: When --recursive is used, the output folder cannot be inside the input folder to prevent loops.")
                     sys.exit(1)
-        except ValueError: # Paths are on different drives, relpath raises ValueError
+        except ValueError:
             logger.debug("Input/output paths on different drives, skipping containment check.")
             pass
 
@@ -155,6 +171,9 @@ class Config:
         if self.output_format in ('jpg', 'webp'):
             default_quality = 95 if self.output_format == 'jpg' else 80
             self.output_format_options['quality'] = self.quality if self.quality is not None else default_quality
+        if self.output_format == 'webp': # Add webp_lossless to output_format_options
+            self.output_format_options['lossless'] = self.webp_lossless
+
         logger.debug(f"Output format options set: {self.output_format_options}")
         logger.debug("Environment and options prepared.")
 
@@ -182,15 +201,15 @@ def resize_image_maintain_aspect_ratio(img: Image.Image, target_width: int, targ
         return img
 
     new_width, new_height = 0, 0
-    if target_width > 0 and target_height > 0: # Fit within both width and height
+    if target_width > 0 and target_height > 0:
         ratio = min(target_width / original_width, target_height / original_height)
         new_width = max(1, int(original_width * ratio))
         new_height = max(1, int(original_height * ratio))
-    elif target_width > 0: # Fit to width
+    elif target_width > 0:
         ratio = target_width / original_width
         new_width = target_width
         new_height = max(1, int(original_height * ratio))
-    elif target_height > 0: # Fit to height
+    elif target_height > 0:
         ratio = target_height / original_height
         new_height = target_height
         new_width = max(1, int(original_width * ratio))
@@ -228,28 +247,27 @@ def prepare_image_for_save(img: Image.Image, output_format_str: Optional[str]) -
     """Prepares image mode for saving, e.g., handling transparency for JPG."""
     save_img = img
     original_mode = img.mode
-    if output_format_str == 'JPG': # JPG does not support alpha
-        if img.mode in ('RGBA', 'LA', 'P'): # Modes that might have alpha or need conversion
-            if img.mode == 'P' and 'transparency' in img.info: # Palette mode with transparency
-                save_img = img.convert('RGBA') # Convert to RGBA first to handle transparency correctly
+    if output_format_str == 'JPG':
+        if img.mode in ('RGBA', 'LA', 'P'):
+            if img.mode == 'P' and 'transparency' in img.info:
+                save_img = img.convert('RGBA')
                 logger.debug("Converted 'P' (with transparency) -> 'RGBA' for JPG saving.")
-            elif img.mode == 'P': # Palette mode without transparency info (or not RGBA convertible directly)
+            elif img.mode == 'P':
                  save_img = img.convert('RGB')
                  logger.debug("Converted 'P' -> 'RGB' for JPG saving.")
 
-            # If now RGBA or LA, composite onto a white background
             if save_img.mode in ('RGBA', 'LA'):
                 logger.debug(f"Processing '{save_img.mode}' mode for JPG saving...")
-                background = Image.new("RGB", save_img.size, (255, 255, 255)) # White background
+                background = Image.new("RGB", save_img.size, (255, 255, 255))
                 try:
-                    mask = save_img.split()[-1] # Get alpha channel as mask
+                    mask = save_img.split()[-1]
                     background.paste(save_img, mask=mask)
                     save_img = background
                     logger.debug(f"Converted '{original_mode}' -> 'RGB' by merging alpha channel onto white background.")
-                except (IndexError, ValueError): # Fallback if alpha channel processing fails
+                except (IndexError, ValueError):
                     save_img = save_img.convert('RGB')
                     logger.warning(f"Error processing alpha channel for JPG. Forcing conversion '{original_mode}' -> 'RGB'.")
-    elif output_format_str == 'WEBP': # WEBP supports alpha, but P mode might need conversion
+    elif output_format_str == 'WEBP':
          if img.mode == 'P':
               save_img = img.convert("RGBA") if 'transparency' in img.info else img.convert("RGB")
               logger.debug(f"Converted 'P' -> '{save_img.mode}' for WEBP saving.")
@@ -262,15 +280,15 @@ def process_single_image_file(input_path: str, relative_path: str, config: Confi
     """
     Processes a single image file: loads, resizes, prepares, and saves it.
     Returns: (success_bool, error_message_or_none, affected_path, original_relative_path).
-    'affected_path' is output_path on success, input_path on error.
+    'affected_path' is output_path on success, input_path on error or skip.
     'original_relative_path' is the relative_path argument.
     """
     base_name, original_ext = os.path.splitext(os.path.basename(input_path))
     output_format_str = config.output_format_options['format_str']
-    logger.debug(f"Processing: '{relative_path}'") # This log will appear from worker.
+    logger.debug(f"Processing: '{relative_path}'")
 
     output_ext_map = {'jpg': '.jpg', 'webp': '.webp', 'png': '.png'}
-    output_ext = output_ext_map.get(output_format_str.lower(), original_ext) # Keep original if not specified
+    output_ext = output_ext_map.get(output_format_str.lower(), original_ext)
 
     output_relative_dir = os.path.dirname(relative_path)
     output_dir_for_file = os.path.join(config.absolute_output_dir, output_relative_dir)
@@ -282,12 +300,24 @@ def process_single_image_file(input_path: str, relative_path: str, config: Confi
              logger.warning(f"Warning: Created missing output subdirectory: '{output_dir_for_file}'")
          except OSError as e:
               error_msg = f"Failed to create output subdirectory: {output_dir_for_file} ({e})"
-              logger.error(error_msg) # Logged by worker
+              logger.error(error_msg)
               return False, error_msg, input_path, relative_path
 
     output_filename = base_name + output_ext
     output_path_base = os.path.join(output_dir_for_file, output_filename)
-    output_path = get_unique_filepath(output_path_base)
+    
+    output_path = output_path_base
+    if os.path.exists(output_path_base):
+        if config.overwrite_policy == "skip":
+            logger.info(f"Skipping existing file due to policy: '{relative_path}' -> '{output_path_base}'")
+            return True, SKIPPED_EXISTING_MSG, input_path, relative_path
+        elif config.overwrite_policy == "rename":
+            output_path = get_unique_filepath(output_path_base)
+            if output_path != output_path_base:
+                 logger.info(f"Output file '{output_path_base}' exists. Renaming to '{output_path}' due to policy.")
+        elif config.overwrite_policy == "overwrite":
+            logger.info(f"Overwriting existing file due to policy: '{output_path_base}'")
+
 
     original_exif_bytes = None
     exif_data = None
@@ -295,14 +325,18 @@ def process_single_image_file(input_path: str, relative_path: str, config: Confi
     try:
         with Image.open(input_path) as img:
             logger.debug(f"Image loaded: '{relative_path}' (Size: {img.size}, Mode: {img.mode})")
-            if 'exif' in img.info and img.info['exif']:
+            
+            if not config.strip_exif and 'exif' in img.info and img.info['exif']:
                 original_exif_bytes = img.info['exif']
                 try:
                     exif_data = piexif.load(original_exif_bytes)
                     logger.debug(f"EXIF data loaded successfully: '{relative_path}'")
-                except Exception as e: # piexif can raise various errors
+                except Exception as e: 
                     logger.warning(f"Failed to parse EXIF for '{relative_path}' ({type(e).__name__}). Attempting to keep original bytes.")
-                    exif_data = None # Ensure exif_data is None if parsing fails
+                    exif_data = None
+            elif config.strip_exif:
+                logger.debug(f"EXIF stripping enabled for '{relative_path}'. All EXIF data will be removed.")
+
 
             save_format_upper = output_format_str.upper() if output_format_str != 'original' else None
             img_prepared = prepare_image_for_save(img, save_format_upper)
@@ -317,54 +351,58 @@ def process_single_image_file(input_path: str, relative_path: str, config: Confi
                 img_resized = resize_image_fixed_size(
                     img_prepared, resize_opts['width'], resize_opts['height'], resize_opts['filter_obj']
                 )
-            # No 'else' needed as img_resized is already img_prepared if mode is 'none'
 
             save_kwargs = {}
             save_format_arg = save_format_upper if output_format_str != 'original' else None
-            if save_format_arg == 'JPG': save_format_arg = 'JPEG' # Pillow uses 'JPEG'
+            if save_format_arg == 'JPG': save_format_arg = 'JPEG'
 
             final_exif_bytes = None
-            if output_format_str != 'original': # Only modify/process EXIF if format is changing
-                if exif_data:
-                    try:
-                        # Reset Orientation to 1 (Normal) to avoid auto-rotation issues by viewers
-                        if piexif.ImageIFD.Orientation in exif_data.get('0th', {}):
-                            exif_data['0th'][piexif.ImageIFD.Orientation] = 1
-                            logger.debug("Reset EXIF Orientation tag to 1.")
-                        # Remove thumbnail to save space and prevent outdated thumbnails
-                        if 'thumbnail' in exif_data and exif_data['thumbnail']:
-                             exif_data['thumbnail'] = None
-                             logger.debug("Removed EXIF thumbnail data.")
-                        final_exif_bytes = piexif.dump(exif_data)
-                        logger.debug("Successfully dumped modified EXIF data.")
-                    except Exception as e:
-                        logger.warning(f"Failed to dump modified EXIF for '{relative_path}' ({type(e).__name__}). Attempting to use original EXIF.")
-                        final_exif_bytes = original_exif_bytes # Fallback to original if modification fails
-                elif original_exif_bytes: # If parsing failed but we have original bytes
+            if not config.strip_exif: 
+                if output_format_str != 'original': 
+                    if exif_data:
+                        try:
+                            if piexif.ImageIFD.Orientation in exif_data.get('0th', {}):
+                                exif_data['0th'][piexif.ImageIFD.Orientation] = 1
+                                logger.debug("Reset EXIF Orientation tag to 1.")
+                            if 'thumbnail' in exif_data and exif_data['thumbnail']:
+                                 exif_data['thumbnail'] = None
+                                 logger.debug("Removed EXIF thumbnail data.")
+                            final_exif_bytes = piexif.dump(exif_data)
+                            logger.debug("Successfully dumped modified EXIF data.")
+                        except Exception as e:
+                            logger.warning(f"Failed to dump modified EXIF for '{relative_path}' ({type(e).__name__}). Attempting to use original EXIF.")
+                            final_exif_bytes = original_exif_bytes
+                    elif original_exif_bytes: 
+                         final_exif_bytes = original_exif_bytes
+                         logger.debug("Using original EXIF bytes as parsing failed but bytes are available.")
+                else: 
                      final_exif_bytes = original_exif_bytes
-                     logger.debug("Using original EXIF bytes as parsing failed but bytes are available.")
-            else: # Keep original EXIF if format is 'original'
-                 final_exif_bytes = original_exif_bytes
-                 if final_exif_bytes: logger.debug("Passing original EXIF data for original format.")
-
-            output_opts = config.output_format_options
+                     if final_exif_bytes: logger.debug("Passing original EXIF data for original format.")
+            
+            if final_exif_bytes: # This implies strip_exif is False
+                # Removed redundant: output_opts = config.output_format_options
+                if output_format_str == 'jpg':
+                    save_kwargs['exif'] = final_exif_bytes
+                elif output_format_str == 'png':
+                    try: save_kwargs['exif'] = final_exif_bytes
+                    except TypeError: logger.warning(f"'{relative_path}': Pillow version might not support EXIF for PNG.")
+                elif output_format_str == 'webp':
+                    save_kwargs['exif'] = final_exif_bytes
+                elif output_format_str == 'original':
+                    if original_ext.lower() in ['.jpg', '.jpeg', '.tiff', '.tif', '.webp']:
+                         save_kwargs['exif'] = final_exif_bytes
+            
+            output_opts = config.output_format_options # This one is used
             if output_format_str == 'jpg':
                 quality = output_opts.get('quality', 95)
                 save_kwargs.update({'quality': quality, 'optimize': True, 'progressive': True})
-                if final_exif_bytes: save_kwargs['exif'] = final_exif_bytes
             elif output_format_str == 'png':
                 save_kwargs['optimize'] = True
-                if final_exif_bytes:
-                     try: save_kwargs['exif'] = final_exif_bytes
-                     except TypeError: logger.warning(f"'{relative_path}': Pillow version might not support EXIF for PNG.")
             elif output_format_str == 'webp':
                 quality = output_opts.get('quality', 80)
-                save_kwargs.update({'quality': quality, 'lossless': False}) # Default to lossy WEBP
-                if final_exif_bytes: save_kwargs['exif'] = final_exif_bytes
-            elif output_format_str == 'original' and final_exif_bytes:
-                # Only add EXIF if the original format supports it (common ones)
-                if original_ext.lower() in ['.jpg', '.jpeg', '.tiff', '.tif', '.webp']:
-                     save_kwargs['exif'] = final_exif_bytes
+                lossless_setting = output_opts.get('lossless', False) # Get lossless setting from config
+                save_kwargs.update({'quality': quality, 'lossless': lossless_setting})
+
 
             logger.debug(f"Attempting to save image: '{output_path}' (Format: {save_format_arg or 'Original'})")
             img_resized.save(output_path, format=save_format_arg, **save_kwargs)
@@ -373,26 +411,26 @@ def process_single_image_file(input_path: str, relative_path: str, config: Confi
 
     except UnidentifiedImageError:
         msg = "Invalid or corrupted image file"
-        logger.error(f"Processing failed: '{relative_path}' - {msg}") # Logged by worker
+        logger.error(f"Processing failed: '{relative_path}' - {msg}")
         return False, msg, input_path, relative_path
     except PermissionError:
         msg = "File read/write permission denied"
-        logger.error(f"Processing failed: '{relative_path}' - {msg}") # Logged by worker
+        logger.error(f"Processing failed: '{relative_path}' - {msg}")
         return False, msg, input_path, relative_path
-    except OSError as e: # Covers various file system errors
+    except OSError as e: 
         msg = f"File system error ({e})"
-        logger.error(f"Processing failed: '{relative_path}' - {msg}") # Logged by worker
-        if os.path.exists(output_path): # Attempt to clean up partially created file
+        logger.error(f"Processing failed: '{relative_path}' - {msg}")
+        if os.path.exists(output_path) and output_path != input_path : 
             try: os.remove(output_path); logger.warning(f"Removed partially created file after error: '{output_path}'")
             except OSError: pass
         return False, msg, input_path, relative_path
-    except ValueError as e: # e.g. from Pillow operations
+    except ValueError as e: 
          msg = f"Image processing value error ({e})"
-         logger.error(f"Processing failed: '{relative_path}' - {msg}") # Logged by worker
+         logger.error(f"Processing failed: '{relative_path}' - {msg}")
          return False, msg, input_path, relative_path
-    except Exception as e: # Catch-all for unexpected errors
+    except Exception as e: 
         msg = f"Unexpected error ({type(e).__name__}: {e})"
-        logger.critical(f"Processing failed: '{relative_path}' - {msg}", exc_info=True) # Log with stack trace
+        logger.critical(f"Processing failed: '{relative_path}' - {msg}", exc_info=True)
         return False, msg, input_path, relative_path
 
 def scan_for_image_files(config: Config) -> Tuple[list[Tuple[str, str]], list[str]]:
@@ -401,62 +439,80 @@ def scan_for_image_files(config: Config) -> Tuple[list[Tuple[str, str]], list[st
     skipped_scan_files = []
     logger.info(f"Scanning input folder: '{config.absolute_input_dir}' (Recursive: {config.recursive})")
 
+    items_to_scan = []
     if config.recursive:
         for root, dirs, files in os.walk(config.absolute_input_dir):
-            # Prevent recursion into the output directory if it's inside the input directory
             if os.path.abspath(root).startswith(config.absolute_output_dir):
                 skipped_msg = os.path.relpath(root, config.absolute_input_dir) + " (Output folder subdirectory - skipped)"
                 logger.debug(f"Skipping scan: '{skipped_msg}'")
                 skipped_scan_files.append(skipped_msg)
-                dirs[:] = [] # Don't traverse into this directory further
+                dirs[:] = [] 
                 continue
             for filename in files:
-                input_path = os.path.join(root, filename)
-                relative_path = os.path.relpath(input_path, config.absolute_input_dir)
-                if filename.lower().endswith(SUPPORTED_INPUT_EXTENSIONS):
-                    files_to_process.append((input_path, relative_path))
-                else:
-                    skipped_scan_files.append(relative_path + " (Unsupported format)")
-    else: # Non-recursive scan
+                items_to_scan.append((os.path.join(root, filename), os.path.relpath(os.path.join(root, filename), config.absolute_input_dir)))
+    else: 
         for filename in os.listdir(config.absolute_input_dir):
             input_path = os.path.join(config.absolute_input_dir, filename)
             if os.path.isfile(input_path):
-                if filename.lower().endswith(SUPPORTED_INPUT_EXTENSIONS):
-                    files_to_process.append((input_path, filename)) # relative_path is just filename
-                else:
-                    skipped_scan_files.append(filename + " (Unsupported format)")
+                 items_to_scan.append((input_path, filename))
             elif os.path.isdir(input_path) and os.path.abspath(input_path) == config.absolute_output_dir:
                 skipped_scan_files.append(filename + " (Output folder)")
             elif os.path.isdir(input_path):
                 skipped_scan_files.append(filename + " (Directory - non-recursive)")
+    
+    for input_path, relative_path in items_to_scan:
+        filename = os.path.basename(input_path)
+        file_ext = os.path.splitext(filename)[1].lower()
 
+        if not file_ext: 
+            skipped_scan_files.append(relative_path + " (No extension)")
+            continue
+
+        process_this_file = False
+        if config.include_extensions:
+            if file_ext in config.include_extensions:
+                process_this_file = True
+            else:
+                skipped_scan_files.append(relative_path + f" (Not in --include-extensions: {file_ext})")
+        elif file_ext in DEFAULT_SUPPORTED_INPUT_EXTENSIONS:
+            process_this_file = True
+        else: 
+            skipped_scan_files.append(relative_path + f" (Unsupported format by default: {file_ext})")
+
+        if process_this_file and config.exclude_extensions and file_ext in config.exclude_extensions:
+            process_this_file = False
+            skipped_scan_files.append(relative_path + f" (Excluded by --exclude-extensions: {file_ext})")
+        
+        if process_this_file:
+            files_to_process.append((input_path, relative_path))
 
     logger.info(f"Scan complete: Found {len(files_to_process)} files to process, skipped {len(skipped_scan_files)} items.")
     return files_to_process, skipped_scan_files
 
-def batch_process_images(config: Config) -> Tuple[int, int, list[Tuple[str, str]], list[str]]:
+
+def batch_process_images(config: Config) -> Tuple[int, int, int, list[Tuple[str, str]], list[str]]:
     """Manages the batch processing of images using a multiprocessing pool."""
     processed_count = 0
     error_count = 0
+    skipped_overwrite_count = 0 
     error_files = []
-    all_skipped_files = []
+    all_skipped_files = [] 
 
     logger.info(f"Starting batch processing. Output folder: '{config.absolute_output_dir}'")
 
     try:
-        files_to_process, skipped_scan_files = scan_for_image_files(config)
-        all_skipped_files.extend(skipped_scan_files)
+        files_to_process, skipped_scan_files_list = scan_for_image_files(config)
+        all_skipped_files.extend(skipped_scan_files_list)
         total_files = len(files_to_process)
         if total_files == 0:
-             logger.warning("(!) No image files found to process in the specified path.")
-             return 0, 0, [], all_skipped_files
+             logger.warning("(!) No image files found to process with current filters.")
+             return 0, 0, 0, [], all_skipped_files
         else:
             logger.info(f"-> Found {total_files} image files. Starting processing.")
     except Exception as e:
         logger.critical(f"(!) Critical Error: Failed to access input path '{config.absolute_input_dir}'. ({e})", exc_info=True)
-        return 0, 0, [], all_skipped_files
+        return 0, 0, 0, [], all_skipped_files
 
-    # Pre-create necessary output subdirectories
     required_subdirs = set()
     for _, relative_path in files_to_process:
         output_relative_dir = os.path.dirname(relative_path)
@@ -471,35 +527,33 @@ def batch_process_images(config: Config) -> Tuple[int, int, list[Tuple[str, str]
             except OSError as e:
                 logger.error(f"Error: Failed to create output subdirectory '{output_dir_to_create}' ({e}). Files in this directory may fail.")
 
-    # --- Image Processing Loop with Multiprocessing ---
     num_processes = multiprocessing.cpu_count()
     logger.info(f"Using {num_processes} worker processes for image processing.")
 
     tasks_with_config = [((input_p, rel_p), config) for input_p, rel_p in files_to_process]
 
     with multiprocessing.Pool(processes=num_processes) as pool:
-        # Use tqdm for overall progress bar
         with tqdm(total=total_files, desc="Processing images", unit="file", ncols=100, leave=True) as pbar:
-            # imap_unordered gets results as they complete, good for progress bar updates
             for res_success, res_error_msg, res_affected_path, res_relative_path in pool.imap_unordered(static_process_image_worker, tasks_with_config):
-                if res_success:
+                if res_success and res_error_msg == SKIPPED_EXISTING_MSG:
+                    skipped_overwrite_count +=1
+                elif res_success:
                     processed_count += 1
                 else:
                     error_count += 1
-                    # Use tqdm.write for immediate feedback for errors in the main process console
                     tqdm.write(f" ✗ Error: '{os.path.basename(res_affected_path)}' (in '{os.path.dirname(res_relative_path)}' folder) - {res_error_msg}")
                     error_files.append((res_relative_path, res_error_msg or "Unknown error"))
-                pbar.update(1) # Update progress bar for each completed task
+                pbar.update(1)
 
-    logger.info(f"Batch processing complete. Success: {processed_count}, Errors: {error_count}")
-    return processed_count, error_count, error_files, all_skipped_files
+    logger.info(f"Batch processing complete. Success: {processed_count}, Errors: {error_count}, Skipped (overwrite policy): {skipped_overwrite_count}")
+    return processed_count, error_count, skipped_overwrite_count, error_files, all_skipped_files
 
 # --- Argument Parsing and Setup ---
 def parse_arguments() -> Config:
     """Parses command line arguments and returns a Config object."""
     parser = argparse.ArgumentParser(
         description=f"Batch Image Resizer Script (v{SCRIPT_VERSION})",
-        formatter_class=argparse.RawTextHelpFormatter, # Allows for newlines in help text
+        formatter_class=argparse.RawTextHelpFormatter,
         usage="%(prog)s [input_dir] -m <mode> -O <format> [options]"
     )
     parser.add_argument("input_dir", nargs='?', default='input',
@@ -521,21 +575,40 @@ def parse_arguments() -> Config:
     resize_group = parser.add_argument_group('Resize Options (ignored if mode is "none")')
     resize_group.add_argument("-w", "--width", type=int, default=0, help="Target width (pixels)")
     resize_group.add_argument("-H", "--height", type=int, default=0, help="Target height (pixels)")
-    resize_group.add_argument("-f", "--filter", choices=FILTER_NAMES.keys(), default=None, # Default set to None, validated later
+    resize_group.add_argument("-f", "--filter", choices=FILTER_NAMES.keys(), default=None,
                               help="Resize filter (Required if resizing):\n" +
                                    "\n".join([f"  {k}: {v}" for k, v in FILTER_NAMES.items()]))
 
     optional_group = parser.add_argument_group('Other Optional Options')
     optional_group.add_argument("-r", "--recursive", action="store_true", help="Include subfolders")
-    optional_group.add_argument("-q", "--quality", type=int, default=None, # Default None, applied if relevant
-                                help="JPG/WEBP quality (1-100, higher is better). Default: JPG=95, WEBP=80")
+    optional_group.add_argument("-q", "--quality", type=int, default=None,
+                                help="JPG/WEBP quality (1-100, higher is better). Default: JPG=95, WEBP=80 (lossy)")
+    optional_group.add_argument("--strip-exif", action="store_true", help="Remove all EXIF data from images.")
+    optional_group.add_argument("--overwrite-policy", choices=['rename', 'overwrite', 'skip'], default='rename',
+                                help="Policy for existing output files:\n"
+                                     "  rename: Add suffix (e.g., _1) (default)\n"
+                                     "  overwrite: Replace existing file\n"
+                                     "  skip: Do not process if output file exists")
+    optional_group.add_argument("--include-extensions", nargs='+', metavar='EXT',
+                                help="Process only these extensions (e.g., jpg png).\n"
+                                     "This REPLACES the default list of supported extensions.\n"
+                                     "Cannot be used with --exclude-extensions.")
+    optional_group.add_argument("--exclude-extensions", nargs='+', metavar='EXT',
+                                help="Exclude these extensions from processing (e.g., gif tiff).\n"
+                                     "Applied AFTER the default list or --include-extensions list.\n"
+                                     "Cannot be used with --include-extensions.")
+    optional_group.add_argument("--webp-lossless", action="store_true",
+                                help="Use lossless compression for WEBP output (ignored if not WEBP).")
+    
     optional_group.add_argument('--version', action='version', version=f'%(prog)s {SCRIPT_VERSION}')
     optional_group.add_argument("-v", "--verbose", action="store_true",
                                 help="Enable verbose (DEBUG level) logging")
 
     args = parser.parse_args()
 
-    # Validate resize options based on mode
+    if args.include_extensions and args.exclude_extensions:
+        parser.error("argument --include-extensions: not allowed with argument --exclude-extensions.")
+
     if args.resize_mode == 'aspect_ratio':
         if args.width <= 0 and args.height <= 0:
             parser.error("Mode 'aspect_ratio' requires --width or --height (or both) to be > 0.")
@@ -551,18 +624,21 @@ def parse_arguments() -> Config:
     elif args.resize_mode == 'none' and (args.width > 0 or args.height > 0 or args.filter):
         logger.warning("   -> Info: --width, --height, and --filter are ignored when --resize-mode is 'none'.")
 
-    # Validate quality
     if args.output_format in ('jpg', 'webp') and args.quality is not None:
         if not (1 <= args.quality <= 100):
             parser.error(f"--quality must be between 1 and 100 (got {args.quality}).")
     elif args.quality is not None and args.output_format not in ('jpg', 'webp'):
         logger.warning(f"   -> Warning: --quality is ignored for output format '{args.output_format}'.")
+    
+    if args.webp_lossless and args.output_format != 'webp':
+        logger.warning("   -> Warning: --webp-lossless is ignored when output format is not WEBP.")
+
 
     try:
         return Config(**vars(args))
-    except SystemExit: # Raised by parser.error()
+    except SystemExit: 
         raise
-    except Exception as e: # Catch any other error during Config creation
+    except Exception as e: 
         logger.critical(f"(!) Error during configuration object creation: {e}", exc_info=True)
         sys.exit(1)
 
@@ -581,33 +657,49 @@ def display_settings(config: Config):
         size_desc = ' and/or '.join(size_info) if config.resize_mode == 'aspect_ratio' else f"{resize_opts['width']}x{resize_opts['height']}px"
         print(f"  Target size: {size_desc}{' (maintaining aspect ratio)' if config.resize_mode == 'aspect_ratio' else ''}")
         print(f"  Resize filter: {FILTER_NAMES[resize_opts['filter_str']]}")
+    
     print(f"Output format: {SUPPORTED_OUTPUT_FORMATS[config.output_format]}")
-    if 'quality' in config.output_format_options:
+    if config.output_format == 'webp':
+        webp_mode = "Lossless" if config.output_format_options.get('lossless') else f"Lossy (Quality: {config.output_format_options.get('quality', 80)})"
+        print(f"  WEBP Mode: {webp_mode}")
+    elif 'quality' in config.output_format_options: # For JPG
         print(f"  Quality: {config.output_format_options['quality']}")
-    print(f"Preserve EXIF metadata: Yes (default, where supported by format)")
+    
+    exif_handling = "Strip all EXIF" if config.strip_exif else "Preserve/Modify EXIF (default)"
+    print(f"EXIF Handling: {exif_handling}")
+    print(f"Overwrite Policy: {config.overwrite_policy.capitalize()}")
+    if config.include_extensions:
+        print(f"Include Extensions: {', '.join(config.include_extensions)}")
+    if config.exclude_extensions: # Should not appear if include_extensions is used due to parser error
+        print(f"Exclude Extensions: {', '.join(config.exclude_extensions)}")
+    if not config.include_extensions and not config.exclude_extensions:
+        print(f"Processed Extensions: Default ({', '.join(DEFAULT_SUPPORTED_INPUT_EXTENSIONS)})")
+
     print(f"Log Level: {logging.getLevelName(logger.getEffectiveLevel())}")
     print("="*72)
 
-def print_summary(processed: int, errors: int, error_list: list, skipped_list: list, output_dir: str):
+def print_summary(processed: int, errors: int, skipped_overwrite: int, error_list: list, skipped_scan_list: list, output_dir: str):
     """Prints a summary of the processing results."""
     print(f"\n\n--- Processing Summary ---")
     print(f"Successfully processed images: {processed}")
     print(f"Errors encountered: {errors}")
+    print(f"Skipped (due to overwrite policy): {skipped_overwrite}")
     if error_list:
         print("\n[Files with Errors]")
-        for i, (filepath, errmsg) in enumerate(error_list[:20]): # Show first 20 errors
+        for i, (filepath, errmsg) in enumerate(error_list[:20]): 
             print(f"  - {filepath}: {errmsg}")
         if len(error_list) > 20:
             print(f"  ... and {len(error_list) - 20} more error(s).")
-    if skipped_list:
-        print(f"\nSkipped files/folders during scan ({len(skipped_list)} total):")
-        display_skipped = skipped_list[:5] # Show first 5 skipped
-        print(f"  {', '.join(display_skipped)}{'...' if len(skipped_list) > 5 else ''}")
-        if logger.getEffectiveLevel() <= logging.DEBUG and skipped_list: # Show all if verbose
+    
+    if skipped_scan_list:
+        print(f"\nSkipped items during scan ({len(skipped_scan_list)} total):")
+        display_skipped = skipped_scan_list[:5] 
+        print(f"  {', '.join(display_skipped)}{'...' if len(skipped_scan_list) > 5 else ''}")
+        if logger.getEffectiveLevel() <= logging.DEBUG and skipped_scan_list: 
             print("  Full list of skipped items (debug mode):")
-            for item in skipped_list: print(f"    - {item}")
+            for item in skipped_scan_list: print(f"    - {item}")
     else:
-        print("\nNo files or folders were skipped during scan.")
+        print("\nNo items were skipped during scan.")
     print("\n--- All tasks completed ---")
     print(f"Results saved in: '{output_dir}'")
 
@@ -620,24 +712,21 @@ def main():
         logger.info(f"===== Image Resizer Script v{SCRIPT_VERSION} Started =====")
         display_settings(config)
 
-        processed_count, error_count, error_files, skipped_files = batch_process_images(config)
-        print_summary(processed_count, error_count, error_files, skipped_files, config.absolute_output_dir)
+        processed_count, error_count, skipped_overwrite_count, error_files, skipped_scan_files = batch_process_images(config)
+        print_summary(processed_count, error_count, skipped_overwrite_count, error_files, skipped_scan_files, config.absolute_output_dir)
 
         logger.info(f"===== Image Resizer Script Finished =====")
-        sys.exit(1 if error_count > 0 else 0) # Exit with 1 if errors occurred
-    except SystemExit as e: # Handle sys.exit() calls, e.g., from argparse or explicit exits
+        sys.exit(1 if error_count > 0 else 0) 
+    except SystemExit as e: 
         if e.code is None or e.code == 0:
             logger.info("Script exited normally.")
         else:
             logger.error(f"Script exited with error code {e.code}.")
-        # No re-raise needed as sys.exit() already handles program termination.
-    except Exception as e: # Catch any other unhandled exceptions
+    except Exception as e: 
         logger.critical(f"Unhandled exception occurred: {e}", exc_info=True)
-        print(f"\n(!) Critical Error: {e}") # Also print to console for visibility
-        sys.exit(2) # General error exit code
+        print(f"\n(!) Critical Error: {e}") 
+        sys.exit(2) 
 
 if __name__ == "__main__":
-    # This check is crucial for multiprocessing on Windows and for PyInstaller.
-    # It prevents child processes from re-executing the main script logic.
     multiprocessing.freeze_support()
     main()
