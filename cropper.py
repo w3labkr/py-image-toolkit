@@ -13,17 +13,26 @@ from PIL import Image, UnidentifiedImageError, ImageOps # ImageOps for EXIF hand
 from typing import Tuple, List, Optional, Dict, Any, Union
 from dataclasses import dataclass, field # Use dataclass for configuration
 
-# Attempt to import tqdm
-try:
-    from tqdm import tqdm
-    TQDM_AVAILABLE = True
-except ImportError:
-    TQDM_AVAILABLE = False
-    def tqdm(iterable, **kwargs):
-        """Placeholder for tqdm if not installed."""
-        logging.info("tqdm library not installed, progress bar will be omitted. (pip install tqdm)")
-        return iterable
+# --- Logging Setup ---
+# Define detailed log format (timestamp, log level, process name, message)
+log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(processName)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
+# Create console handler (using default stderr)
+log_handler = logging.StreamHandler()
+log_handler.setFormatter(log_formatter)
+
+# Get the root logger
+logger = logging.getLogger()
+
+# Remove existing handlers (prevent duplicate logging)
+if logger.hasHandlers():
+    logger.handlers.clear()
+
+# Add the new handler
+logger.addHandler(log_handler)
+logger.setLevel(logging.INFO) # Default level INFO
+
+# --- Constants ---
 __version__ = "1.7.1" # Version update reflecting default path changes
 
 # --- Configuration Dataclass ---
@@ -77,18 +86,6 @@ class Config:
         if not (1 <= self.jpeg_quality <= 100):
              logging.warning(f"JPEG quality must be between 1 and 100 ({self.jpeg_quality}). Setting to 95.")
              self.jpeg_quality = 95
-
-
-# --- Logging Setup ---
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(processName)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-log_handler = logging.StreamHandler()
-log_handler.setFormatter(log_formatter)
-logger = logging.getLogger()
-# Remove existing handlers (prevent duplicate logging)
-if logger.hasHandlers():
-    logger.handlers.clear()
-logger.addHandler(log_handler)
-logger.setLevel(logging.INFO) # Default level INFO
 
 # Store the main process PID (for preventing duplicate logs in multiprocessing)
 main_process_pid = os.getpid()
