@@ -35,7 +35,7 @@ logger.setLevel(logging.INFO)
 
 
 # --- Constants ---
-__version__ = "3.33" # Script version (Fixed dataclass field order for 'overwrite')
+__version__ = "3.37" # Script version (Renamed Config.output_dir_arg to Config.output_dir)
 
 # Define PIL/Pillow resampling filters, handling potential API changes across versions.
 try:
@@ -91,11 +91,11 @@ class Config:
     # --- User-configurable via command-line arguments ---
     # Fields without dataclass-defined defaults (values are expected from argparse)
     output_format: str 
-    overwrite: bool # Policy for handling existing output files. True to overwrite, False to skip. Set by argparse.
 
     # Fields with dataclass-defined defaults
+    overwrite: bool = True # Policy for handling existing output files. True to overwrite, False to skip.
     input_dir: str = 'input' # Default input directory.
-    output_dir_arg: Optional[str] = None # User-specified output directory (if any).
+    output_dir: Optional[str] = None # User-specified output directory (if any). Renamed from output_dir_arg.
     ratio: str = 'aspect_ratio' # Default resize ratio mode.
     width: int = 0 # Target width for resizing.
     height: int = 0 # Target height for resizing.
@@ -177,8 +177,9 @@ class Config:
 
         self.absolute_input_dir = os.path.abspath(self.input_dir)
 
-        if self.output_dir_arg:
-            self.absolute_output_dir = os.path.abspath(self.output_dir_arg)
+        # Use the renamed 'output_dir' field
+        if self.output_dir: 
+            self.absolute_output_dir = os.path.abspath(self.output_dir)
         else:
             self.absolute_output_dir = os.path.abspath("output") 
             logger.info(f"   -> Info: Output folder not specified. Using default: '{self.absolute_output_dir}'")
@@ -550,7 +551,7 @@ def scan_for_image_files(config: Config) -> Tuple[list[Tuple[str, str]], list[st
     """
     files_to_process = [] 
     skipped_scan_items_reasons = [] 
-    logger.info(f"Scanning input folder: '{config.absolute_input_dir}' (Non-recursive)")
+    logger.info(f"Scanning input folder: '{config.absolute_input_dir}'")
 
     items_found_to_evaluate = [] # (absolute_path, relative_path_to_input_dir)
     try:
@@ -731,7 +732,8 @@ def parse_arguments() -> Config:
                                      "  fixed: Force resize to target Width x Height (may distort).\n"
                                      "  none: No resizing (only format conversion/EXIF handling).")
 
-    parser.add_argument("-o", "--output-dir", dest='output_dir_arg', # Maps to Config.output_dir_arg
+    # Changed dest to 'output_dir' to match the Config field name
+    parser.add_argument("-o", "--output-dir", dest='output_dir', 
                         help="Path to save processed images (default: 'output' in current directory).") 
 
     # Group for resize dimension options (relevant if ratio is not 'none')
@@ -761,10 +763,10 @@ def parse_arguments() -> Config:
     # Mutually exclusive group for overwrite policy
     overwrite_group = optional_group.add_mutually_exclusive_group()
     overwrite_group.add_argument("--overwrite", dest='overwrite', action='store_true',
-                                 help="Overwrite existing output files. This is the default behavior if no overwrite flag is specified.")
+                                 help="Overwrite existing output files.") # Help text simplified as default is now clear
     overwrite_group.add_argument("--no-overwrite", dest='overwrite', action='store_false',
                                  help="Do not overwrite existing output files; skip them instead.")
-    parser.set_defaults(overwrite=True) # Default behavior is to overwrite
+    parser.set_defaults(overwrite=True) # Ensures 'overwrite' is True if neither flag is given
 
     # Extension filtering options
     optional_group.add_argument("--include-extensions", nargs='+', metavar='EXT',
@@ -819,7 +821,9 @@ def parse_arguments() -> Config:
         logger.warning("   -> Warning: --webp-lossless argument is ignored when output format is not WEBP.")
 
     try:
-        # Create Config instance from parsed arguments
+        # Create Config instance from parsed arguments.
+        # args.overwrite will be True by default (from set_defaults) if no flag is given,
+        # or True/False if a flag is explicitly used. This value is then passed to Config.
         return Config(**vars(args))
     except SystemExit: # Raised by parser.error()
         raise # Re-raise to exit script
@@ -832,7 +836,7 @@ def display_settings(config: Config):
     print("\n" + "="*30 + " Script Settings " + "="*30)
     print(f"Input folder: {config.absolute_input_dir}")
     print(f"Output folder: {config.absolute_output_dir}")
-    print(f"Resize ratio policy (-r, --ratio): {config.ratio}") # Updated help display
+    print(f"Resize ratio policy (-r, --ratio): {config.ratio}") 
     
     if config.ratio != 'none':
         resize_opts = config.resize_options

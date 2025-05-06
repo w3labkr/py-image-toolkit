@@ -91,18 +91,18 @@ python resizer.py <input_path> [options]
 #### Key Options
 
 * `-f`, `--output-format`: Target output file format (`original`, `png`, `jpg`, `webp`). (Default: `original`)
-* `-r`, `--ratio`: Resize ratio mode:
+* `-r`, `--ratio`: Resize ratio behavior:
   * `aspect_ratio`: Maintain aspect ratio to fit the target size. Requires at least one of `--width` or `--height`.
   * `fixed`: Force resize to exact dimensions (may distort the image). Both `--width` and `--height` must be specified.
-  * `none`: No resizing; only format conversion/EXIF handling will be applied.
+  * `none`: No resizing; only format conversion and EXIF handling will be applied.
 * `-w`, `--width`: Target width in pixels.
 * `-H`, `--height`: Target height in pixels.
-* `--filter`: Resampling filter to use for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). (Default: `lanczos`)
-* `-o`, `--output-dir`: Output directory path. (Default: `output`)
+* `--filter`: Resampling filter for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). (Default: `lanczos`)
+* `-o`, `--output-dir`: Output directory for processed images. (Default: `output`)
 * `--jpeg-quality`: Quality for JPG output (1-100, default: `95`).
 * `--webp-quality`: Quality for WEBP output (1-100, default: `80` for lossy WEBP).
 * `--strip-exif`: Remove all EXIF metadata from images.
-* `--overwrite` / `--no-overwrite`: Controls whether to overwrite existing output files. (Default: overwrite)
+* `--overwrite` / `--no-overwrite`: Controls whether to overwrite existing output files. Files are overwritten by default.
 * `--include-extensions`: Process only files with these extensions (e.g., `jpg png`).
 * `--exclude-extensions`: Exclude files with these extensions from processing (e.g., `gif tiff`).
 * `--webp-lossless`: Use lossless compression for WEBP output (only applicable when the output format is WEBP).
