@@ -35,7 +35,7 @@ logger.setLevel(logging.INFO)
 
 
 # --- Constants ---
-__version__ = "3.27" # Script version (Defaults for output-format and filter changed)
+__version__ = "3.28" # Script version (Quality arguments refactored)
 
 # Define PIL/Pillow resampling filters, handling potential API changes across versions.
 try:
@@ -95,7 +95,7 @@ class Config:
     width: int = 0 # Target width for resizing.
     height: int = 0 # Target height for resizing.
     filter: Optional[str] = None # Resampling filter to use (e.g., 'lanczos'). Default is 'lanczos'.
-    quality: Optional[int] = None # User-specified quality override for JPG/WEBP.
+    # quality: Optional[int] = None # REMOVED: User-specified quality override for JPG/WEBP.
     verbose: bool = False # Enable verbose (DEBUG level) logging.
     strip_exif: bool = False # Whether to remove EXIF data.
     overwrite_policy: str = "rename" # Policy for handling existing output files.
@@ -109,9 +109,9 @@ class Config:
     resize_options: Dict[str, Any] = field(init=False, default_factory=dict) # Parsed resize options.
     output_format_options: Dict[str, Any] = field(init=False, default_factory=dict) # Parsed output format options.
 
-    # --- Default values for specific settings ---
-    jpg_quality: int = 95 # Default quality for JPG output.
-    webp_quality: int = 80 # Default quality for lossy WEBP output.
+    # --- Default values for specific settings, can be overridden by args ---
+    jpg_quality: int = 95 # Quality for JPG output. Can be overridden by --jpeg-quality.
+    webp_quality: int = 80 # Quality for lossy WEBP output. Can be overridden by --webp-quality.
     supported_extensions: Tuple[str, ...] = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp') # Default supported image extensions.
     
     # --- Constant mappings used within the configuration ---
@@ -206,9 +206,9 @@ class Config:
         # self.output_format will have a default value ('original') if not specified by user
         self.output_format_options = {'format_str': self.output_format}
         if self.output_format == 'jpg':
-            self.output_format_options['quality'] = self.quality if self.quality is not None else self.jpg_quality
+            self.output_format_options['quality'] = self.jpg_quality # Use the (potentially overridden) jpg_quality
         elif self.output_format == 'webp':
-            self.output_format_options['quality'] = self.quality if self.quality is not None else self.webp_quality
+            self.output_format_options['quality'] = self.webp_quality # Use the (potentially overridden) webp_quality
             self.output_format_options['lossless'] = self.webp_lossless
 
         logger.debug(f"Output format options prepared: {self.output_format_options}")
@@ -496,7 +496,7 @@ def process_single_image_file(input_path: str, relative_path: str, config: Confi
             output_opts = config.output_format_options 
             if output_format_str == 'jpg':
                 save_kwargs.update({
-                    'quality': output_opts.get('quality', config.jpg_quality), 
+                    'quality': output_opts.get('quality', config.jpg_quality), # Uses quality from _prepare_options
                     'optimize': True,
                     'progressive': True
                 })
@@ -504,7 +504,7 @@ def process_single_image_file(input_path: str, relative_path: str, config: Confi
                 save_kwargs['optimize'] = True 
             elif output_format_str == 'webp':
                 save_kwargs.update({
-                    'quality': output_opts.get('quality', config.webp_quality), 
+                    'quality': output_opts.get('quality', config.webp_quality), # Uses quality from _prepare_options
                     'lossless': output_opts.get('lossless', False) 
                 })
 
@@ -684,23 +684,23 @@ def parse_arguments() -> Config:
     Parses command-line arguments using argparse and returns a Config object.
     Includes validation for argument combinations and values.
     """
-    temp_config = Config(output_format='original', filter='lanczos') # Provide defaults for temp_config
-    filter_choices_map = temp_config.filter_names
-    output_format_choices_map = temp_config.supported_output_formats
-    default_jpg_quality_val = temp_config.jpg_quality
-    default_webp_quality_val = temp_config.webp_quality
-
+    # Create a temporary Config instance to access default values for help messages and argument defaults.
+    # The actual Config instance used by the script will be created from parsed args.
+    temp_config_for_defaults = Config(output_format='original', filter='lanczos') 
+    filter_choices_map = temp_config_for_defaults.filter_names
+    output_format_choices_map = temp_config_for_defaults.supported_output_formats
+    # default_jpg_quality_val and default_webp_quality_val are now directly from temp_config_for_defaults
+    
     parser = argparse.ArgumentParser(
         description=f"Batch Image Resizer Script (v{__version__})",
         formatter_class=argparse.RawTextHelpFormatter, 
-        usage="%(prog)s [input_dir] [options]" # -f is no longer mandatory in usage
+        usage="%(prog)s [input_dir] [options]"
     )
     parser.add_argument("input_dir", nargs='?', default='input',
                         help="Path to the source image folder (default: 'input' in current directory).")
 
-    # --output-format is no longer in a 'required_group' as it has a default
     parser.add_argument("-f", "--output-format", 
-                        default='original', # Default value set to 'original'
+                        default='original', 
                         choices=output_format_choices_map.keys(),
                         help="Target output file format (default: original):\n" +
                              "\n".join([f"  {k}: {v}" for k, v in output_format_choices_map.items()]))
@@ -715,21 +715,28 @@ def parse_arguments() -> Config:
     parser.add_argument("-o", "--output-dir", dest='output_dir_arg',
                         help="Path to save processed images (default: 'output' in current directory).") 
 
-    resize_group = parser.add_argument_group('Resize Options') # "Required" part removed from title
+    resize_group = parser.add_argument_group('Resize Options')
     resize_group.add_argument("-w", "--width", type=int, default=0, help="Target width in pixels for resizing.")
     resize_group.add_argument("-H", "--height", type=int, default=0, help="Target height in pixels for resizing.")
     resize_group.add_argument("--filter", 
-                              default='lanczos', # Default value set to 'lanczos'
+                              default='lanczos', 
                               choices=filter_choices_map.keys(), 
                               help="Resampling filter to use for resizing (default: lanczos):\n" +
                                    "\n".join([f"  {k}: {v}" for k, v in filter_choices_map.items()]))
 
     optional_group = parser.add_argument_group('Other Optional Options')
-    optional_group.add_argument("-q", "--quality", type=int, default=None,
-                                help=f"Override quality for JPG/WEBP (1-100, higher is better).\n"
-                                     f"If not set, script defaults are used:\n"
-                                     f"  JPG default: {default_jpg_quality_val}\n"
-                                     f"  WEBP default (lossy): {default_webp_quality_val}")
+    # REMOVED old -q/--quality argument
+    # optional_group.add_argument("-q", "--quality", type=int, default=None, ...)
+    
+    optional_group.add_argument("--jpeg-quality", type=int, dest='jpg_quality',
+                                default=temp_config_for_defaults.jpg_quality,
+                                help=f"Quality for JPG output (1-100, higher is better).\n"
+                                     f"Default: {temp_config_for_defaults.jpg_quality}")
+    optional_group.add_argument("--webp-quality", type=int, dest='webp_quality',
+                                default=temp_config_for_defaults.webp_quality,
+                                help=f"Quality for WEBP output (1-100, higher is better).\n"
+                                     f"Default: {temp_config_for_defaults.webp_quality} (for lossy WEBP).")
+
     optional_group.add_argument("--strip-exif", action="store_true", help="Remove all EXIF metadata from images.")
     optional_group.add_argument("--overwrite-policy", choices=['rename', 'overwrite', 'skip'], default='rename',
                                 help="Action to take if an output file already exists:\n"
@@ -748,7 +755,7 @@ def parse_arguments() -> Config:
                                      "Cannot be used with --include-extensions.")
     optional_group.add_argument("--webp-lossless", action="store_true",
                                 help="Use lossless compression for WEBP output. Ignored if output format is not WEBP.\n"
-                                     "If set, --quality for WEBP is still used by Pillow but might have less visual impact.")
+                                     "If set, --webp-quality is still used by Pillow but might have less visual impact.")
     
     optional_group.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
     optional_group.add_argument("-v", "--verbose", action="store_true",
@@ -758,11 +765,6 @@ def parse_arguments() -> Config:
 
     if args.include_extensions and args.exclude_extensions:
         parser.error("The arguments --include-extensions and --exclude-extensions cannot be used together.")
-
-    # The check for --filter being required when resize_mode is not 'none' is removed,
-    # as --filter now has a default value ('lanczos').
-    # if args.resize_mode != 'none' and not args.filter:
-    #     parser.error(f"The --filter argument is required when resize mode is '{args.resize_mode}'.")
         
     if args.resize_mode == 'aspect_ratio':
         if args.width <= 0 and args.height <= 0:
@@ -775,19 +777,26 @@ def parse_arguments() -> Config:
     elif args.resize_mode == 'none':
         if args.width > 0 or args.height > 0:
              logger.warning("   -> Info: --width and --height arguments are ignored when --resize-mode is 'none'.")
-        # Filter is always present due to default, but it's only *used* if not 'none'.
-        # No specific warning needed for filter if mode is 'none' as it's a sensible default.
 
-    if args.output_format in ('jpg', 'webp') and args.quality is not None:
-        if not (1 <= args.quality <= 100):
-            parser.error(f"--quality must be an integer between 1 and 100 (inclusive), got {args.quality}.")
-    elif args.quality is not None and args.output_format not in ('jpg', 'webp'):
-        logger.warning(f"   -> Warning: --quality argument is ignored for output format '{args.output_format}'. It only applies to JPG and WEBP.")
+    # Validation for new quality arguments
+    if not (1 <= args.jpg_quality <= 100):
+        parser.error(f"--jpeg-quality must be an integer between 1 and 100 (inclusive), got {args.jpg_quality}.")
+    if not (1 <= args.webp_quality <= 100):
+        parser.error(f"--webp-quality must be an integer between 1 and 100 (inclusive), got {args.webp_quality}.")
+
+    # Warnings if quality arguments are set for non-relevant formats
+    # Check if the user *explicitly* set the argument by comparing to the default used by argparse
+    if args.output_format != 'jpg' and args.jpg_quality != temp_config_for_defaults.jpg_quality:
+        logger.warning(f"   -> Warning: --jpeg-quality argument is ignored when output format is not JPG.")
+    if args.output_format != 'webp' and args.webp_quality != temp_config_for_defaults.webp_quality:
+        logger.warning(f"   -> Warning: --webp-quality argument is ignored when output format is not WEBP.")
     
     if args.webp_lossless and args.output_format != 'webp':
         logger.warning("   -> Warning: --webp-lossless argument is ignored when output format is not WEBP.")
 
     try:
+        # All arguments, including jpg_quality and webp_quality (which now have defaults from argparse),
+        # are passed to the Config constructor.
         return Config(**vars(args))
     except SystemExit: 
         raise 
@@ -817,9 +826,11 @@ def display_settings(config: Config):
     
     print(f"Output format (-f, --output-format): {config.supported_output_formats.get(config.output_format, 'N/A')} (Default: original)") 
     if config.output_format == 'webp':
+        # config.output_format_options['quality'] now correctly reflects config.webp_quality
         webp_mode_desc = "Lossless" if config.output_format_options.get('lossless') else f"Lossy (Quality: {config.output_format_options.get('quality')})"
         print(f"  WEBP Mode: {webp_mode_desc}")
     elif config.output_format == 'jpg':
+        # config.output_format_options['quality'] now correctly reflects config.jpg_quality
         print(f"  JPG Quality: {config.output_format_options.get('quality')}")
     
     exif_handling_desc = "Strip all EXIF data" if config.strip_exif else "Preserve/Modify EXIF (default: reset orientation, remove thumbnail)"

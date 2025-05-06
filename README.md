@@ -80,7 +80,7 @@ py-image-toolkit/
 
 ### Image Resizing
 
-The `resizer.py` script (v3.27) processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
+The `resizer.py` script (v3.28) processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
 
 #### Basic Command
 
@@ -94,9 +94,10 @@ python resizer.py <input_path> [options]
 * `-m`, `--resize-mode`: Resize mode (`aspect_ratio`, `fixed`, `none`). (Default: `aspect_ratio`)
 * `-w`, `--width`: Target width in pixels (Required for `aspect_ratio` or `fixed` modes).
 * `-H`, `--height`: Target height in pixels (Required for `fixed` mode; optional for `aspect_ratio`).
-* `--filter`: Resampling filter to use for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). Defaults to `lanczos` (changing previous behavior where it was required).
+* `--filter`: Resampling filter to use for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). Defaults to `lanczos`.
 * `-o`, `--output-dir`: Output directory path (Default: `output`).
-* `-q`, `--quality`: Quality for JPG/WEBP output (1-100, higher is better).
+* `--jpeg-quality`: Quality for JPG output (1-100, higher is better, default: 95).
+* `--webp-quality`: Quality for WEBP output (1-100, higher is better, default: 80 for lossy WEBP).
 * `--strip-exif`: Remove all EXIF metadata from images.
 * `--overwrite-policy`: Policy for existing files (`rename`, `overwrite`, `skip`) (Default: `rename`).
 * `--include-extensions`: Process only specific file extensions (e.g., `jpg png`).
