@@ -32,6 +32,7 @@ if logger.hasHandlers():
 logger.addHandler(log_handler)
 logger.setLevel(logging.INFO) # Default level INFO
 
+
 # --- Constants ---
 __version__ = "1.7.1" # Version update reflecting default path changes
 

@@ -80,34 +80,47 @@ py-image-toolkit/
 
 ### Image Resizing
 
+The `resizer.py` script (v3.27) processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
+
 #### Basic Command
 
 ```bash
-python resizer.py [input_directory] -m <mode> -O <format> [options]
+python resizer.py <input_path> [options]
 ```
 
 #### Key Options
 
-* `-m`, `--resize-mode`: Resize mode (`aspect_ratio`, `fixed`, `none`)
-* `-O`, `--output-format`: Output format (`original`, `png`, `jpg`, `webp`)
-* `-w`, `--width`: Target width in pixels
-* `-H`, `--height`: Target height in pixels
-* `-f`, `--filter`: Resize filter (`lanczos`, `bicubic`, `bilinear`, `nearest`)
-* `-o`, `--output-dir`: Output directory path
-* `-r`, `--recursive`: Enable recursive directory processing
+* `-f`, `--output-format`: Target output file format (`original`, `png`, `jpg`, `webp`). Defaults to `original`.
+* `-m`, `--resize-mode`: Resize mode (`aspect_ratio`, `fixed`, `none`). (Default: `aspect_ratio`)
+* `-w`, `--width`: Target width in pixels (Required for `aspect_ratio` or `fixed` modes).
+* `-H`, `--height`: Target height in pixels (Required for `fixed` mode; optional for `aspect_ratio`).
+* `--filter`: Resampling filter to use for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). Defaults to `lanczos` (changing previous behavior where it was required).
+* `-o`, `--output-dir`: Output directory path (Default: `output`).
+* `-q`, `--quality`: Quality for JPG/WEBP output (1-100, higher is better).
+* `--strip-exif`: Remove all EXIF metadata from images.
+* `--overwrite-policy`: Policy for existing files (`rename`, `overwrite`, `skip`) (Default: `rename`).
+* `--include-extensions`: Process only specific file extensions (e.g., `jpg png`).
+* `--exclude-extensions`: Exclude specific file extensions (e.g., `gif tiff`).
+* `--webp-lossless`: Use lossless compression for WEBP output.
 
 #### Examples
 
-* Aspect Ratio Resize:
+* Resize while maintaining aspect ratio using a high-quality resampling filter:
 
   ```bash
-  python resizer.py ./input -o ./output -m aspect_ratio -f nearest -w 1280 -O jpg
+  python resizer.py ./input -w 1280
   ```
 
-* Fixed Size Resize:
+* Resize to fixed dimensions:
 
   ```bash
-  python resizer.py ./input -o ./output -m fixed -w 720 -H 600 -f bicubic -O png
+  python resizer.py ./input -f png -m fixed -w 720 -H 600
+  ```
+
+* Convert format without resizing and strip EXIF data:
+
+  ```bash
+  python resizer.py ./input -f webp -m none --strip-exif
   ```
 
 ---
@@ -122,44 +135,45 @@ python cropper.py <input_path> [options]
 
 #### Key Options
 
-* `-o`, `--output_dir`: Output directory
-* `-m`, `--method`: Main subject selection (`largest`, `center`)
-* `--ref`, `--reference`: Reference point (`eye`, `box`)
-* `-r`, `--ratio`: Desired crop aspect ratio (e.g., `16:9`, `1.0`)
-* `--rule`: Composition rule (`thirds`, `golden`, `both`)
-* `-p`, `--padding-percent`: Padding percentage around crop area
+* `-o`, `--output_dir`: Output directory (Default: `output`)
+* `-m`, `--method`: Main subject selection (`largest`, `center`) (Default: `largest`)
+* `--ref`, `--reference`: Reference point (`eye`, `box`) (Default: `eye`)
+* `-r`, `--ratio`: Desired crop aspect ratio (e.g., `16:9`, `1.0`) (Default: original)
+* `--rule`: Composition rule (`thirds`, `golden`, `both`) (Default: `both`)
+* `-p`, `--padding-percent`: Padding percentage around crop area (Default: `5.0`)
 * `--dry-run`: Preview without saving output
+* `-c`, `--confidence`: Minimum face detection confidence (Default: `0.6`)
+* `-n`, `--nms`: Non-maximum suppression threshold (Default: `0.3`)
+* `--min-face-width`: Minimum face width in pixels (Default: `30`)
+* `--min-face-height`: Minimum face height in pixels (Default: `30`)
+* `-w`, `--workers`: Number of parallel workers (Default: CPU count)
 
 #### Examples
 
 * Crop a single image:
 
   ```bash
-  python cropper.py ./input -o ./output -r 16:9 --rule thirds
+  python cropper.py ./input/image.jpg -o ./output -r 16:9 --rule thirds
   ```
 
-* Crop all images in a folder:
+* Crop all images in a folder, selecting the main subject based on center proximity and using bounding box as a reference:
 
   ```bash
   python cropper.py ./input -o ./output -r 1:1 -m center --ref box --rule both
   ```
 
+* Perform a dry run without writing output files:
+
+  ```bash
+  python cropper.py ./input -o ./output --dry-run
+  ```
+
 ---
 
-## Example Results
+### Notes
 
-### Resized Image
-
-* Input: `image.jpg` (1920x1080)
-* Output: `image_resized.jpg` (1280x720)
-
-### Cropped Image
-
-* Input: `portrait.jpg` (3000x2000)
-* Output:
-
-  * `portrait_thirds_r16-9_refEye.jpg`
-  * `portrait_golden_r16-9_refEye.jpg`
+- **Resizer**: The `--filter` option is now optional and defaults to `lanczos` for resizing modes (`aspect_ratio` or `fixed`).
+- **Cropper**: The YuNet model will be downloaded automatically if not found in the `models/` directory.
 
 ---
 
@@ -176,4 +190,4 @@ python cropper.py <input_path> [options]
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the [MIT License](LICENSE).
