@@ -136,18 +136,24 @@ python cropper.py <input_path> [options]
 
 #### Key Options
 
-* `-o`, `--output_dir`: Output directory (Default: `output`)
-* `-m`, `--method`: Main subject selection (`largest`, `center`) (Default: `largest`)
-* `--ref`, `--reference`: Reference point (`eye`, `box`) (Default: `eye`)
-* `-r`, `--ratio`: Desired crop aspect ratio (e.g., `16:9`, `1.0`) (Default: original)
-* `--rule`: Composition rule (`thirds`, `golden`, `both`) (Default: `both`)
-* `-p`, `--padding-percent`: Padding percentage around crop area (Default: `5.0`)
-* `--dry-run`: Preview without saving output
-* `-c`, `--confidence`: Minimum face detection confidence (Default: `0.6`)
-* `-n`, `--nms`: Non-maximum suppression threshold (Default: `0.3`)
-* `--min-face-width`: Minimum face width in pixels (Default: `30`)
-* `--min-face-height`: Minimum face height in pixels (Default: `30`)
-* `-w`, `--workers`: Number of parallel workers (Default: CPU count)
+* `--config`: Path to a JSON configuration file to load options from.
+* `-o`, `--output_dir`: Output directory (Default: `output`).
+* `--output-format`: Output image format (e.g., `jpg`, `png`, `webp`). (Default: original format is kept).
+* `-q, --jpeg-quality`: JPEG quality for JPG output (1-100) (Default: `95`).
+* `--webp-quality`: Quality for WEBP output (1-100) (Default: `80`).
+* `--overwrite`: Controls whether to overwrite existing output files. (Default: enabled. Use `--no-overwrite` to prevent overwriting).
+* `--strip-exif`: Remove all EXIF metadata from output images. (Default: EXIF is preserved. Use this flag to strip).
+* `-m`, `--method`: Main subject selection method (`largest` face area, or face `center` closest to image center) (Default: `largest`).
+* `--ref`, `--reference`: Reference point on the subject for composition (`eye` center, `box` center of the face) (Default: `box`).
+* `-r`, `--ratio`: Desired crop aspect ratio (e.g., `16:9`, `1.0`). (Default: original image ratio).
+* `--rule`: Composition rule(s) to apply (`thirds`, `golden`, or `both`) (Default: `both`).
+* `-p`, `--padding-percent`: Percentage of padding to add around the main subject crop area (Default: `5.0`).
+* `-c`, `--confidence`: Minimum confidence score for face detection (0.0-1.0) (Default: `0.6`).
+* `-n`, `--nms`: Non-maximum suppression (NMS) threshold for face detection (0.0-1.0) (Default: `0.3`).
+* `--min-face-width`: Minimum detected face width in pixels (Default: `30`).
+* `--min-face-height`: Minimum detected face height in pixels (Default: `30`).
+* `--dry-run`: Perform a trial run, showing intended actions without writing output files.
+* `-v, --verbose`: Enable verbose logging for detailed process information.
 
 #### Examples
 
