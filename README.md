@@ -23,26 +23,6 @@ py-image-toolkit/
 
 ---
 
-## Key Features
-
-### Image Resizing
-
-- Aspect Ratio Resizing: Maintains aspect ratio while resizing
-- Fixed Size Resizing: Forces images to fit specific dimensions
-- Format Conversion: Supports PNG, JPG, WEBP, and more
-- EXIF Metadata Preservation: Keeps original metadata intact
-- Recursive Processing: Processes directories and subdirectories
-
-### Face Detection & Auto-Cropping
-
-- DNN-based Face Detection: Uses OpenCV’s YuNet for face detection
-- Composition-Aware Cropping: Applies Rule of Thirds, Golden Ratio, or both
-- Main Subject Selection: Selects either the largest face or the one closest to the center
-- Aspect Ratio Cropping: Supports standard ratios like 16:9, 1:1, etc.
-- Parallel Processing: Speeds up processing using multiple cores
-
----
-
 ## Installation
 
 ### Requirements
@@ -80,7 +60,13 @@ py-image-toolkit/
 
 ### Image Resizing
 
-The `resizer.py` script (v3.28) processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
+The `resizer.py` script (v3.38) processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
+
+- Aspect Ratio Resizing: Maintains aspect ratio while resizing
+- Fixed Size Resizing: Forces images to fit specific dimensions
+- Format Conversion: Supports PNG, JPG, WEBP, and more
+- EXIF Metadata Preservation: Keeps original metadata intact
+- Recursive Processing: Processes directories and subdirectories
 
 #### Basic Command
 
@@ -91,7 +77,7 @@ python resizer.py <input_path> [options]
 #### Key Options
 
 * `-f`, `--output-format`: Target output file format (`original`, `png`, `jpg`, `webp`). (Default: `original`)
-* `-r`, `--ratio`: Resize ratio behavior:
+* `-r`, `--ratio`: Resize ratio behavior. (Default: `aspect_ratio`)
   * `aspect_ratio`: Maintain aspect ratio to fit the target size. Requires at least one of `--width` or `--height`.
   * `fixed`: Force resize to exact dimensions (may distort the image). Both `--width` and `--height` must be specified.
   * `none`: No resizing; only format conversion and EXIF handling will be applied.
@@ -101,11 +87,13 @@ python resizer.py <input_path> [options]
 * `-o`, `--output-dir`: Output directory for processed images. (Default: `output`)
 * `--jpeg-quality`: Quality for JPG output (1-100, default: `95`).
 * `--webp-quality`: Quality for WEBP output (1-100, default: `80` for lossy WEBP).
-* `--strip-exif`: Remove all EXIF metadata from images.
-* `--overwrite` / `--no-overwrite`: Controls whether to overwrite existing output files. Files are overwritten by default.
+* `--strip-exif`: Remove all EXIF metadata from images. (Default: EXIF is preserved unless this flag is used).
+* `--overwrite`: Overwrite existing output files. By default, existing files are skipped.
 * `--include-extensions`: Process only files with these extensions (e.g., `jpg png`).
 * `--exclude-extensions`: Exclude files with these extensions from processing (e.g., `gif tiff`).
 * `--webp-lossless`: Use lossless compression for WEBP output (only applicable when the output format is WEBP).
+* `-v`, `--verbose`: Enable detailed (DEBUG level) logging.
+* `--version`: Show program's version number and exit.
 
 #### Examples
 
@@ -131,6 +119,14 @@ python resizer.py <input_path> [options]
 
 ### Face Detection & Auto-Cropping
 
+The `cropper.py` script (v1.8.0) detects faces in images and automatically crops them based on composition rules.
+
+- DNN-based Face Detection: Uses OpenCV’s YuNet for face detection
+- Composition-Aware Cropping: Applies Rule of Thirds, Golden Ratio, or both
+- Main Subject Selection: Selects either the largest face or the one closest to the center
+- Aspect Ratio Cropping: Supports standard ratios like 16:9, 1:1, etc.
+- Parallel Processing: Speeds up processing using multiple cores
+
 #### Basic Command
 
 ```bash
@@ -144,7 +140,7 @@ python cropper.py <input_path> [options]
 * `--output-format`: Output image format (e.g., `jpg`, `png`, `webp`). (Default: original format is kept).
 * `-q, --jpeg-quality`: JPEG quality for JPG output (1-100) (Default: `95`).
 * `--webp-quality`: Quality for WEBP output (1-100) (Default: `80`).
-* `--overwrite`: Controls whether to overwrite existing output files. (Default: enabled. Use `--no-overwrite` to prevent overwriting).
+* `--overwrite`: Overwrite existing output files. (Default: files are skipped if they exist).
 * `--strip-exif`: Remove all EXIF metadata from output images. (Default: EXIF is preserved. Use this flag to strip).
 * `-m`, `--method`: Main subject selection method (`largest` face area, or face `center` closest to image center) (Default: `largest`).
 * `--ref`, `--reference`: Reference point on the subject for composition (`eye` center, `box` center of the face) (Default: `box`).
@@ -157,6 +153,7 @@ python cropper.py <input_path> [options]
 * `--min-face-height`: Minimum detected face height in pixels (Default: `30`).
 * `--dry-run`: Perform a trial run, showing intended actions without writing output files.
 * `-v, --verbose`: Enable verbose logging for detailed process information.
+* `--version`: Show program's version number and exit.
 
 #### Examples
 
@@ -192,7 +189,6 @@ python cropper.py <input_path> [options]
 * Missing Libraries: Use `pip install` to install dependencies
 * Missing Model File: `cropper.py` will auto-download YuNet if missing
 * Image Not Processed:
-
   * Ensure input path and image format are valid
   * Use `--verbose` for detailed logs
 

@@ -26,7 +26,7 @@ logger.setLevel(logging.INFO)
 
 
 # --- Constants ---
-__version__ = "1.7.8" # Version update: English comments/docstrings, static script log name
+__version__ = "1.8.0" # Version update: Standardized all comments and docstrings to English.
 
 # --- Configuration Dataclass ---
 @dataclass
@@ -40,7 +40,7 @@ class Config:
     ratio: Optional[str] = None # e.g., '16:9', '1.0', 'None'
     confidence: float = 0.6
     nms: float = 0.3
-    overwrite: bool = True
+    overwrite: bool = False # Default is NOT to overwrite files. Set to True by --overwrite flag.
     output_format: Optional[str] = None # e.g., 'jpg', 'png', 'webp'
     jpeg_quality: int = 95
     webp_quality: int = 80
@@ -485,7 +485,7 @@ def _process_composition_rule(rule_name: str, suffix: str, img_bgr: np.ndarray, 
     out_path = os.path.join(config.output_dir, out_filename)
 
     # Check overwrite condition
-    if not config.overwrite and os.path.exists(out_path) and not config.dry_run:
+    if not config.overwrite and os.path.exists(out_path) and not config.dry_run: # If overwrite is False (default) and file exists
         logging.debug(f"  -> Debug: {filename}: File exists, overwrite disabled - skipping: {out_filename}") 
         error_message = f"Rule '{rule_name}': Skipped (file exists, overwrite disabled)."
         was_skipped_overwrite = True
@@ -603,7 +603,9 @@ def setup_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output_dir", help=f"Directory to save results (Default: '{Config.output_dir}').")
     parser.add_argument("--config", help="Path to a JSON configuration file to load options from.")
 
-    parser.add_argument("--overwrite", action=argparse.BooleanOptionalAction, default=Config.overwrite, help="Allow overwriting output files if they exist.")
+    # --overwrite flag: if present, sets config.overwrite to True. Default is False.
+    parser.add_argument("--overwrite", dest="overwrite", action="store_true", default=Config.overwrite, # Config.overwrite is False
+                        help="Overwrite existing output files. (Default: files are skipped if they exist)")
     parser.add_argument("--dry-run", action="store_true", default=Config.dry_run, help="Simulate processing without saving files.")
 
     parser.add_argument("-m", "--method", choices=['largest', 'center'], help=f"Method to select main subject (Default: {Config.method}).")
@@ -624,15 +626,17 @@ def setup_arg_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("-v", "--verbose", action="store_true", default=Config.verbose, help="Enable detailed (DEBUG level) logging.")
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}')
+    
+    parser.set_defaults(overwrite=Config.overwrite) # Config.overwrite is now False
+
     return parser
 
 def load_and_merge_config(args: argparse.Namespace) -> Config:
     """Loads default config, then merges JSON config file, and finally merges command-line args."""
-    default_config_obj = Config()
-    config_values = default_config_obj.__dict__.copy() # Start with dataclass defaults
-    config_values['input_path'] = args.input_path # Positional argument always from args
+    default_config_obj = Config() # Default overwrite is False
+    config_values = default_config_obj.__dict__.copy()
+    config_values['input_path'] = args.input_path
 
-    # Load from JSON config file if specified
     if args.config:
         json_config_data = load_config_from_file(args.config)
         for key, value in json_config_data.items():
@@ -640,25 +644,19 @@ def load_and_merge_config(args: argparse.Namespace) -> Config:
             if key in config_values: config_values[key] = value
             else: logging.warning(f"  -> Warning: Unknown key '{key}' in configuration file '{args.config}' ignored.")
 
-    # Override with command-line arguments (only if they were actually provided by the user)
-    parser_instance = setup_arg_parser() # Need a temporary parser instance to check defaults
-    for key, value in vars(args).items():
-        if key == 'input_path' or key == 'config': continue # Already handled
+    parser_instance = setup_arg_parser() 
+    for key, value_from_args in vars(args).items():
+        if key == 'input_path' or key == 'config': continue
         
-        parser_default = parser_instance.get_default(key)
-        # Override if arg was explicitly provided (not None) AND is different from parser's default
-        # This ensures CLI args take precedence over JSON/Config defaults if specified.
-        if value is not None and value != parser_default:
-             if key in config_values: config_values[key] = value
+        if key in ['overwrite', 'dry_run', 'verbose', 'strip_exif']:
+            # For these boolean flags, the value in args is definitive from CLI.
+            config_values[key] = value_from_args
+        elif value_from_args is not None: 
+            parser_default = parser_instance.get_default(key)
+            if value_from_args != parser_default: 
+                 if key in config_values: config_values[key] = value_from_args
     
-    # For BooleanOptionalAction and store_true, check if they differ from Config defaults
-    # as their value in 'args' will always be True/False, not None if not specified.
-    if args.overwrite != default_config_obj.overwrite: config_values['overwrite'] = args.overwrite
-    if args.dry_run != default_config_obj.dry_run: config_values['dry_run'] = args.dry_run
-    if args.verbose != default_config_obj.verbose: config_values['verbose'] = args.verbose
-    if args.strip_exif != default_config_obj.strip_exif: config_values['strip_exif'] = args.strip_exif
-    
-    try: final_config = Config(**config_values) # Create final Config object
+    try: final_config = Config(**config_values)
     except TypeError as e: logging.critical(f"  -> Critical: Configuration error when creating Config object: {e}. Check config file/arguments."); exit(1)
     return final_config
 
@@ -680,7 +678,7 @@ def log_script_settings(config: Config):
     if config.output_format and config.output_format.lower() == 'webp':
         logging.info(f"  WebP Quality: {config.webp_quality}")
     logging.info(f"  Strip EXIF Data: {'Yes' if config.strip_exif else 'No'}")
-    logging.info(f"  Overwrite Existing Files: {'Yes' if config.overwrite else 'No (Rename/Skip)'}") 
+    logging.info(f"  Overwrite Existing Files: {'Yes (Flag Used)' if config.overwrite else 'No (Skipping - Default)'}")
     detected_cpus = os.cpu_count()
     logging.info(f"  Parallel Workers: Using all available CPU cores (Detected: {detected_cpus if detected_cpus is not None else 'N/A, defaulting to 1'})")
     logging.info(f"  Dry Run (Simulation): {'Yes' if config.dry_run else 'No'}")
@@ -698,10 +696,10 @@ def log_processing_summary(total_images_to_process: int, successful_images: int,
     logging.info(f"{'Processing Summary':^40}")
     logging.info("-" * 40)
     logging.info(f"  Total images scanned for processing: {total_images_to_process}")
-    logging.info(f"  Images processed successfully: {successful_images}") # Images for which at least one crop was saved/simulated
-    logging.info(f"  Total cropped files {action_verb}: {total_files_generated}") # Total number of output files
-    logging.info(f"  Images with errors (no files {action_verb}): {images_with_errors}") # Images that failed entirely
-    logging.info(f"  Output files skipped (overwrite policy): {total_skipped_overwrite}") # Individual rule outputs skipped
+    logging.info(f"  Images processed successfully: {successful_images}")
+    logging.info(f"  Total cropped files {action_verb}: {total_files_generated}")
+    logging.info(f"  Images with errors (no files {action_verb}): {images_with_errors}")
+    logging.info(f"  Output files skipped (overwrite policy): {total_skipped_overwrite}")
 
     if skipped_scan_items:
         logging.info(f"\n  Items skipped during initial scan ({len(skipped_scan_items)} total):")
@@ -727,15 +725,14 @@ def main():
     args = parser.parse_args()
     config = load_and_merge_config(args)
 
-    setup_logging(logging.DEBUG if config.verbose else logging.INFO) # Set logging level based on config
+    setup_logging(logging.DEBUG if config.verbose else logging.INFO)
 
     logging.info(f"===== Image Cropping Script Started =====")
     if config.dry_run:
         logging.info("***** Running in Dry Run mode. No files will be saved. *****")
 
-    log_script_settings(config) # Log the effective settings
+    log_script_settings(config)
 
-    # Preparation: Download model and create output directory
     if not download_model(config.yunet_model_url, config.yunet_model_path):
         logging.critical(f"  -> Critical: DNN model file is not available or download failed. Aborting.")
         logging.info(f"===== Image Cropping Script Finished Abnormally =====")
@@ -747,10 +744,9 @@ def main():
         return
 
     input_path = config.input_path
-    skipped_scan_items_details = [] # Store details of items skipped during initial scan
+    skipped_scan_items_details = []
 
     if os.path.isfile(input_path):
-        # Process a single file
         if not input_path.lower().endswith(config.supported_extensions):
             logging.warning(f"  -> Warning: Single file '{input_path}' is not a supported image type. Skipping.")
             logging.info(f"===== Image Cropping Script Finished =====")
@@ -762,23 +758,20 @@ def main():
             detector.setScoreThreshold(config.confidence); detector.setNMSThreshold(config.nms)
             result = process_image(input_path, config, detector)
             
-            # Log single file result more explicitly
             if result.get('success'):
                 logging.info(f"  -> Success: {os.path.basename(input_path)}: {result.get('message', 'Processing finished.')}")
             else:
-                # Check if it was only due to overwrite skips or actual failure
                 if result.get('skipped_overwrite_rules', 0) > 0 and not result.get('saved_files',0) and "failed" not in result.get('message','').lower() :
                      logging.info(f"  -> Info: {os.path.basename(input_path)}: {result.get('message', 'All rules skipped by overwrite policy.')}")
-                else: # Actual failure or no faces/rules
+                else:
                      logging.warning(f"  -> Warning: {os.path.basename(input_path)}: {result.get('message', 'Processing failed or no faces/rules applicable.')}")
 
         except cv2.error as e: logging.critical(f"  -> Critical: Failed to load face detection model (single file): {e}")
         except Exception as e: logging.critical(f"  -> Critical: Error during single file processing: {e}", exc_info=True)
 
     elif os.path.isdir(input_path):
-        # Process a directory
         logging.info(f"  -> Info: Starting directory processing: {os.path.abspath(input_path)}")
-        try: # Scan input directory
+        try:
             all_items = os.listdir(input_path)
             image_files = []
             for item_name in all_items:
@@ -788,9 +781,9 @@ def main():
                         image_files.append(item_path)
                     else:
                         skipped_scan_items_details.append(f"{item_name} (Unsupported extension)")
-                elif os.path.isdir(item_path): # Directories are skipped in non-recursive scan
+                elif os.path.isdir(item_path):
                     skipped_scan_items_details.append(f"{item_name} (Directory)")
-                else: # Other non-file, non-directory items
+                else:
                     skipped_scan_items_details.append(f"{item_name} (Not a file or directory)")
 
         except OSError as e:
@@ -798,7 +791,7 @@ def main():
             logging.info(f"===== Image Cropping Script Finished Abnormally =====")
             return
 
-        if not image_files: # No processable images found
+        if not image_files:
             logging.info(f"  -> Info: No supported image files ({', '.join(config.supported_extensions)}) found in '{os.path.abspath(input_path)}'.")
             if skipped_scan_items_details:
                  logging.info(f"  -> Info: {len(skipped_scan_items_details)} other item(s) were found and skipped during scan.")
@@ -810,44 +803,40 @@ def main():
         if skipped_scan_items_details:
             logging.info(f"  -> Info: Skipped {len(skipped_scan_items_details)} other item(s) found during scan (see summary).")
 
-        # Determine number of workers for parallel processing
         available_cpus = os.cpu_count()
-        if available_cpus is None: # Fallback if cpu_count is None
+        if available_cpus is None:
             logging.warning("  -> Warning: Could not determine number of CPU cores. Defaulting to 1 worker.")
             available_cpus = 1
-        elif available_cpus == 0: # Should not happen, but defensive
+        elif available_cpus == 0:
             logging.warning("  -> Warning: os.cpu_count() returned 0. Defaulting to 1 worker.")
             available_cpus = 1
         
-        # Use all available CPUs, but not more than the number of files. Ensure at least 1.
         actual_workers = min(available_cpus, len(image_files))
         actual_workers = max(1, actual_workers) 
         is_parallel = actual_workers > 1
-
 
         logging.info(f"  -> Info: Using {actual_workers} worker process(es) for image processing (Mode: {'Parallel' if is_parallel else 'Sequential'}).")
         total_start_time = time.time()
         results_list = [] 
         
-        tasks = [(img_path, config) for img_path in image_files] # Prepare tasks for workers
+        tasks = [(img_path, config) for img_path in image_files]
 
         if is_parallel:
             with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as executor:
                 try:
                     future_results = executor.map(process_image_wrapper, tasks)
-                    # Configure tqdm for cleaner output when not verbose
                     tqdm_extra_kwargs = {}
-                    if not config.verbose: # Less cluttered progress bar if not verbose
+                    if not config.verbose:
                         tqdm_extra_kwargs['bar_format'] = '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
-                        tqdm_extra_kwargs['ncols'] = 80 # Adjust width as needed
+                        tqdm_extra_kwargs['ncols'] = 80
 
                     for result in tqdm.tqdm(future_results, total=len(tasks), desc="Processing images", unit="file", **tqdm_extra_kwargs):
                         results_list.append(result)
-                except Exception as e: # Catch errors during parallel execution
+                except Exception as e:
                      logging.critical(f"  -> Critical: Error during parallel processing execution: {e}", exc_info=True)
-        else: # Sequential processing
+        else: 
             try:
-                detector = cv2.FaceDetectorYN.create(config.yunet_model_path, "", (0, 0)) # Load detector once
+                detector = cv2.FaceDetectorYN.create(config.yunet_model_path, "", (0, 0))
                 detector.setScoreThreshold(config.confidence); detector.setNMSThreshold(config.nms)
                 tqdm_extra_kwargs = {}
                 if not config.verbose:
@@ -859,26 +848,23 @@ def main():
             except cv2.error as e: logging.critical(f"  -> Critical: Failed to load face detection model (sequential): {e}"); return
             except Exception as e: logging.critical(f"  -> Critical: Error during sequential processing loop: {e}", exc_info=True)
 
-        # --- Aggregate and Summarize Results from directory processing ---
         successful_image_count = 0; total_generated_count = 0; images_with_errors_count = 0; total_skipped_overwrite_count = 0
         
-        for res in results_list: # Iterate through results from workers/sequential processing
-            if res and isinstance(res, dict): # Check if result is valid
-                if res.get('success', False): # Image was successfully processed (at least one rule)
+        for res in results_list:
+            if res and isinstance(res, dict):
+                if res.get('success', False):
                     successful_image_count += 1
-                # An image is an "error" if it didn't succeed AND it wasn't *only* skipped due to overwrite policy
                 elif not res.get('success', False) and \
                      not (res.get('skipped_overwrite_rules', 0) > 0 and \
                           not res.get('saved_files', 0) and \
                           "failed" not in res.get('message','').lower()):
                     images_with_errors_count +=1
 
-                total_generated_count += res.get('saved_files', 0) # Sum of all files saved/simulated
-                total_skipped_overwrite_count += res.get('skipped_overwrite_rules', 0) # Sum of all rules skipped by overwrite
-            else: # Should not happen if workers return correctly
-                 images_with_errors_count +=1 # Count as an error if result is malformed
+                total_generated_count += res.get('saved_files', 0)
+                total_skipped_overwrite_count += res.get('skipped_overwrite_rules', 0)
+            else:
+                 images_with_errors_count +=1
                  logging.error(f"  -> Error: Received invalid result from worker: {res}")
-
 
         total_end_time = time.time()
         total_processing_time = total_end_time - total_start_time
@@ -887,7 +873,7 @@ def main():
                                skipped_scan_items_details, config.output_dir,
                                total_processing_time, config.dry_run)
 
-    else: # Input path is not a file or directory
+    else:
         if not os.path.exists(input_path):
              logging.critical(f"  -> Critical: Input path not found: {os.path.abspath(input_path)}")
         else:
@@ -898,5 +884,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main_process_pid = os.getpid() # Store PID for main process logging differentiation
+    main_process_pid = os.getpid()
     main()
