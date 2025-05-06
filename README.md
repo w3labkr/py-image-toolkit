@@ -90,23 +90,26 @@ python resizer.py <input_path> [options]
 
 #### Key Options
 
-* `-f`, `--output-format`: Target output file format (`original`, `png`, `jpg`, `webp`). Defaults to `original`.
-* `-m`, `--resize-mode`: Resize mode (`aspect_ratio`, `fixed`, `none`). (Default: `aspect_ratio`)
-* `-w`, `--width`: Target width in pixels (Required for `aspect_ratio` or `fixed` modes).
-* `-H`, `--height`: Target height in pixels (Required for `fixed` mode; optional for `aspect_ratio`).
-* `--filter`: Resampling filter to use for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). Defaults to `lanczos`.
-* `-o`, `--output-dir`: Output directory path (Default: `output`).
-* `--jpeg-quality`: Quality for JPG output (1-100, higher is better, default: 95).
-* `--webp-quality`: Quality for WEBP output (1-100, higher is better, default: 80 for lossy WEBP).
+* `-f`, `--output-format`: Target output file format (`original`, `png`, `jpg`, `webp`). (Default: `original`)
+* `-r`, `--ratio`: Resize ratio mode:
+  * `aspect_ratio`: Maintain aspect ratio to fit the target size. Requires at least one of `--width` or `--height`.
+  * `fixed`: Force resize to exact dimensions (may distort the image). Both `--width` and `--height` must be specified.
+  * `none`: No resizing; only format conversion/EXIF handling will be applied.
+* `-w`, `--width`: Target width in pixels.
+* `-H`, `--height`: Target height in pixels.
+* `--filter`: Resampling filter to use for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). (Default: `lanczos`)
+* `-o`, `--output-dir`: Output directory path. (Default: `output`)
+* `--jpeg-quality`: Quality for JPG output (1-100, default: `95`).
+* `--webp-quality`: Quality for WEBP output (1-100, default: `80` for lossy WEBP).
 * `--strip-exif`: Remove all EXIF metadata from images.
-* `--overwrite-policy`: Policy for existing files (`rename`, `overwrite`, `skip`) (Default: `rename`).
-* `--include-extensions`: Process only specific file extensions (e.g., `jpg png`).
-* `--exclude-extensions`: Exclude specific file extensions (e.g., `gif tiff`).
-* `--webp-lossless`: Use lossless compression for WEBP output.
+* `--overwrite` / `--no-overwrite`: Controls whether to overwrite existing output files. (Default: overwrite)
+* `--include-extensions`: Process only files with these extensions (e.g., `jpg png`).
+* `--exclude-extensions`: Exclude files with these extensions from processing (e.g., `gif tiff`).
+* `--webp-lossless`: Use lossless compression for WEBP output (only applicable when the output format is WEBP).
 
 #### Examples
 
-* Resize while maintaining aspect ratio using a high-quality resampling filter:
+* Resize while maintaining aspect ratio:
 
   ```bash
   python resizer.py ./input -w 1280
@@ -115,13 +118,13 @@ python resizer.py <input_path> [options]
 * Resize to fixed dimensions:
 
   ```bash
-  python resizer.py ./input -f png -m fixed -w 720 -H 600
+  python resizer.py ./input -f png -r fixed -w 720 -H 600
   ```
 
 * Convert format without resizing and strip EXIF data:
 
   ```bash
-  python resizer.py ./input -f webp -m none --strip-exif
+  python resizer.py ./input -f webp -r none --strip-exif
   ```
 
 ---
