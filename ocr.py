@@ -1,6 +1,5 @@
 # PaddleOCR을 사용하여 이미지에서 텍스트를 추출하는 스크립트 (OpenCV 전처리 및 폴더/병렬 처리 추가)
 import cv2 # OpenCV 라이브러리 임포트
-from paddleocr import PaddleOCR, draw_ocr
 from PIL import Image
 import numpy as np # NumPy 임포트 (OpenCV 이미지 처리에 사용)
 import os # 파일 및 디렉토리 관리를 위해 os 모듈 임포트
@@ -11,7 +10,13 @@ import logging # 로깅 모듈 임포트
 import multiprocessing # 병렬 처리를 위해 multiprocessing 임포트
 import warnings # 경고 메시지 제어를 위해 warnings 모듈 임포트
 
-__version__ = "0.9.2" # 스크립트 버전 정보 (ccache 경고 필터링 강화 및 주석 추가)
+# 스크립트 시작 시점에 ccache 경고 필터 설정 (PaddleOCR 임포트 전에 적용되도록)
+# 특정 모듈을 지정하지 않고 메시지 내용과 종류로 필터링
+warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
+
+from paddleocr import PaddleOCR, draw_ocr # PaddleOCR은 경고 필터 설정 후에 임포트
+
+__version__ = "0.9.5" # 스크립트 버전 정보 (ccache 경고 필터링 방식 수정)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -32,9 +37,8 @@ def setup_logging(level=logging.INFO):
 
 def worker_initializer():
     """각 작업자 프로세스 시작 시 호출될 초기화 함수입니다."""
-    # PaddlePaddle ccache 경고 메시지 필터링
-    warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*", module="paddle.utils.cpp_extension.extension_utils")
-    # 필요시 다른 경고 필터도 여기에 추가 가능
+    # 작업자 레벨에서도 ccache 경고 필터 적용
+    warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
     logger.debug(f"작업자 {os.getpid()}: 경고 필터 초기화 완료.")
 
 
@@ -170,12 +174,7 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
         logger.debug(f"OCR 결과 시각화 이미지가 {output_image_path}에 저장되었습니다.")
         
         if show_image_flag:
-            # 주의: show_image_flag가 True일 때, 일부 환경에서 PIL.Image.show()는
-            # 이미지 뷰어 창이 닫힐 때까지 현재 프로세스(작업자)를 블록할 수 있습니다.
-            # 이 경우, 모든 이미지가 처리되어도 해당 작업자가 종료되지 않아
-            # 스크립트 전체가 멈춘 것처럼 보일 수 있습니다.
-            # 대량 처리 시에는 이 옵션을 끄거나, 결과를 파일로 저장 후 별도로 확인하는 것이 좋습니다.
-            logger.info(f"{original_filename} 결과 이미지를 표시합니다. 창을 닫아야 다음 작업이 진행될 수 있습니다 (환경에 따라 다름).")
+            logger.info(f"{original_filename} 결과 이미지를 표시합니다. (창을 닫아야 다음 작업 진행 가능성 있음)")
             im_show_pil.show() 
 
     except FileNotFoundError:
@@ -207,9 +206,6 @@ def process_single_image_task(task_args_tuple):
     (current_image_path, filename, ocr_engine_params, output_dir, 
      skip_preprocessing, save_text, show_image, font_path) = task_args_tuple
     
-    # worker_initializer에서 이미 경고 필터가 설정되었을 것이므로, 여기서 재설정은 선택 사항입니다.
-    # warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
-
     logger.debug(f"작업자 {os.getpid()}: 처리 시작: {filename}")
     
     ocr_input_data = current_image_path
@@ -235,7 +231,6 @@ def process_single_image_task(task_args_tuple):
         if save_text:
             save_extracted_text(extracted_data, output_dir, filename)
 
-        # display_ocr_result는 잠재적으로 블로킹될 수 있는 show()를 포함
         display_ocr_result(current_image_path, extracted_data, output_dir, filename,
                            preprocessed_img=processed_image_for_display, 
                            show_image_flag=show_image,
@@ -279,9 +274,8 @@ def main():
     """스크립트의 메인 실행 로직입니다."""
     multiprocessing.freeze_support()
     
-    # 주 프로세스 시작 시 경고 필터 설정 (자식 프로세스에도 영향)
-    # warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*", module="paddle.utils.cpp_extension.extension_utils")
-    # worker_initializer에서 처리하도록 변경하여 각 작업자에서 명시적으로 설정
+    # 주 프로세스 시작 시점의 경고 필터는 이미 스크립트 최상단에 적용됨.
+    # worker_initializer에서도 각 작업자 프로세스에 대해 필터가 적용됨.
 
     args = parse_arguments()
     
@@ -332,7 +326,6 @@ def main():
         ))
 
     try:
-        # initializer=worker_initializer 를 통해 각 작업자 프로세스 시작 시 경고 필터 적용
         with multiprocessing.Pool(processes=num_workers, initializer=worker_initializer) as pool:
             results = []
             logger.info("병렬 이미지 처리 시작...")
@@ -340,17 +333,10 @@ def main():
                                total=len(task_arguments_list), desc="전체 이미지 처리 중"):
                 results.append(result) 
                 if result: 
-                    logger.debug(f"작업 완료: {result}")
+                    logger.debug(f"작업 결과 수신: {result}")
             
-            logger.debug("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다.")
-            # 'with' 블록이 종료되면서 pool.close() 및 pool.join()이 자동으로 호출됩니다.
-            # 명시적으로 호출할 필요는 없으나, 디버깅 시에는 유용할 수 있습니다.
-            # logger.debug("풀 닫는 중...")
-            # pool.close()
-            # logger.debug("풀 조인 대기 중...")
-            # pool.join()
-            # logger.debug("풀 조인 완료.")
-
+            logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다.")
+            
     except Exception as e:
         logger.error(f"병렬 처리 중 주 프로세스에서 예상치 못한 오류 발생: {e}", exc_info=True)
         
