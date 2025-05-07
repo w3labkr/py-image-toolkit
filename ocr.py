@@ -10,34 +10,27 @@ from tqdm import tqdm # 진행률 표시를 위해 tqdm 임포트
 import logging # 로깅 모듈 임포트
 import multiprocessing # 병렬 처리를 위해 multiprocessing 임포트
 
-__version__ = "0.8.1" # 스크립트 버전 정보 (num_workers 옵션 제거)
+__version__ = "0.9.0" # 스크립트 버전 정보 (리팩토링)
 
 # --- 로거 설정 ---
-# logger는 각 프로세스에서 호출될 때 해당 프로세스의 로거를 사용하게 됩니다.
-# 기본 설정은 main에서 한 번 수행합니다.
 logger = logging.getLogger(__name__)
 
-def setup_logger(level=logging.INFO):
+def setup_logging(level=logging.INFO):
     """기본 로거를 설정합니다."""
-    # 핸들러가 이미 설정되어 있다면 중복 추가하지 않음 (주 프로세스에서만 설정)
     if not logger.handlers or not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
         logger.setLevel(level)
-        # 기본적으로 tqdm과 잘 동작하도록 StreamHandler 사용
         ch = logging.StreamHandler() 
         ch.setLevel(level)
         formatter = logging.Formatter('%(asctime)s - %(processName)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         ch.setFormatter(formatter)
         logger.addHandler(ch)
-    else: # 이미 핸들러가 있다면 레벨만 조정
+    else: 
         logger.setLevel(level)
         for handler in logger.handlers:
             handler.setLevel(level)
 
-
 def preprocess_image_for_ocr(image_path):
-    """
-    OCR 정확도 향상을 위해 이미지를 전처리합니다.
-    """
+    """OCR 정확도 향상을 위해 이미지를 전처리합니다."""
     try:
         img = cv2.imread(image_path)
         if img is None:
@@ -57,13 +50,9 @@ def preprocess_image_for_ocr(image_path):
         return None
 
 def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_log=""):
-    """
-    주어진 이미지 데이터에서 텍스트를 추출합니다. (작업자 프로세스용)
-    이 함수는 각 작업자 프로세스 내에서 PaddleOCR 엔진을 초기화합니다.
-    """
+    """주어진 이미지 데이터에서 텍스트를 추출합니다. (작업자 프로세스용)"""
     try:
-        # 각 작업자 프로세스 내에서 PaddleOCR 엔진 초기화
-        logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 초기화 중... (파일: {filename_for_log})")
+        logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 초기화 중... (파일: {filename_for_log}, 파라미터: {ocr_engine_params})")
         ocr_engine = PaddleOCR(**ocr_engine_params)
         logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 초기화 완료. (파일: {filename_for_log})")
 
@@ -84,13 +73,10 @@ def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_l
         return extracted_texts
     except Exception as e:
         logger.error(f"작업자 {os.getpid()}: OCR 처리 중 오류 (파일: {filename_for_log}): {e}")
-        return None # 오류 발생 시 None 반환
+        return None
 
-
-def get_os_specific_font_path():
-    """
-    운영 체제에 맞는 기본 한글 폰트 경로를 반환합니다.
-    """
+def get_system_font_path():
+    """운영 체제에 맞는 기본 시스템 폰트 경로를 반환합니다 (존재 여부 확인 포함)."""
     system = platform.system()
     font_path = None
     if system == "Windows":
@@ -109,18 +95,41 @@ def get_os_specific_font_path():
                 break
     
     if font_path and os.path.exists(font_path):
-        logger.debug(f"OS ({system}) 자동 감지 폰트 확인: {font_path}")
+        logger.debug(f"OS ({system}) 시스템 폰트 확인: {font_path}")
         return font_path
-    else:
-        logger.debug(f"OS ({system}) 자동 감지 폰트 없음 또는 경로 문제.")
-        return None
+    logger.debug(f"OS ({system}) 시스템 폰트를 찾지 못했습니다 (경로: {font_path}).")
+    return None
+
+def determine_font_for_visualization():
+    """시각화에 사용할 폰트 경로를 결정하고 관련 정보를 로깅합니다."""
+    font_path_to_use = get_system_font_path()
+    
+    if font_path_to_use:
+        logger.info(f"텍스트 시각화를 위해 시스템 자동 감지 폰트 사용: {font_path_to_use}")
+        return font_path_to_use
+
+    logger.info("시스템 폰트를 찾지 못하여 로컬 폰트를 확인합니다.")
+    local_korean_font = './fonts/malgun.ttf' # 스크립트 실행 위치 기준
+    if os.path.exists(local_korean_font):
+        font_path_to_use = local_korean_font
+        logger.info(f"로컬 한국어 폰트 사용: {font_path_to_use}")
+        return font_path_to_use
+
+    logger.info(f"로컬 한국어 폰트 '{local_korean_font}'를 찾지 못했습니다.")
+    local_english_font = './fonts/arial.ttf'
+    if os.path.exists(local_english_font):
+        font_path_to_use = local_english_font
+        logger.warning(f"로컬 영문 대체 폰트 사용: {font_path_to_use} (한글이 깨질 수 있습니다.)")
+        return font_path_to_use
+    
+    logger.warning(f"로컬 영문 대체 폰트 '{local_english_font}'도 찾지 못했습니다.")
+    logger.warning("사용 가능한 특정 폰트를 찾지 못했습니다. 시각화 시 PaddleOCR 내부 기본 폰트가 사용될 수 있습니다.")
+    return None
+
 
 def display_ocr_result(original_image_path, extracted_data, output_dir, original_filename, 
                        preprocessed_img=None, show_image_flag=False, font_path_to_use=None):
-    """
-    OCR 결과를 이미지 위에 표시하고 저장합니다.
-    font_path_to_use: 외부에서 결정된 폰트 경로를 전달받음
-    """
+    """OCR 결과를 이미지 위에 표시하고 저장합니다."""
     if not extracted_data:
         logger.info(f"{original_filename}: 시각화할 OCR 결과가 없습니다.")
         return
@@ -139,7 +148,7 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
         try:
             im_show = draw_ocr(image, boxes, txts, scores, font_path=font_path_to_use)
         except Exception as e:
-            logger.error(f"draw_ocr 중 오류 (폰트: {font_path_to_use}, 파일: {original_filename}): {e}. 폰트 없이 재시도.")
+            logger.error(f"draw_ocr 중 오류 (폰트: {font_path_to_use}, 파일: {original_filename}): {e}. 폰트 없이 재시도합니다.")
             im_show = draw_ocr(image, boxes, font_path=None) 
 
         im_show_pil = Image.fromarray(im_show)
@@ -157,7 +166,6 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
         logger.error(f"원본 이미지 파일 '{original_image_path}'을 찾을 수 없습니다 (결과 표시 중).")
     except Exception as e:
         logger.error(f"OCR 결과 표시/저장 중 예외 발생 (파일: {original_filename}): {e}")
-
 
 def save_extracted_text(extracted_data, output_dir, original_filename):
     """추출된 텍스트를 .txt 파일로 저장합니다."""
@@ -177,27 +185,23 @@ def save_extracted_text(extracted_data, output_dir, original_filename):
     except IOError as e:
         logger.error(f"텍스트 파일 저장 중 오류 (파일: {output_text_path}): {e}")
 
-
 # 병렬 처리를 위한 작업자 함수
-def process_single_image_task(args_tuple):
-    """
-    단일 이미지 처리 작업을 수행하는 함수 (multiprocessing.Pool의 작업자용).
-    """
-    # 인자 언패킹
-    (current_image_path, filename, ocr_engine_params, output_dir_path, 
-     skip_preprocessing, save_text_flag, display_images_flag, determined_font_path) = args_tuple
+def process_single_image_task(task_args_tuple):
+    """단일 이미지 처리 작업을 수행하는 함수 (multiprocessing.Pool의 작업자용)."""
+    (current_image_path, filename, ocr_engine_params, output_dir, 
+     skip_preprocessing, save_text, show_image, font_path) = task_args_tuple
 
     logger.debug(f"작업자 {os.getpid()}: 처리 시작: {filename}")
     
     ocr_input_data = current_image_path
-    processed_image_data_for_display = None # 시각화에 사용될 전처리된 이미지
+    processed_image_for_display = None 
 
     if not skip_preprocessing:
         logger.debug(f"작업자 {os.getpid()}: 외부 전처리 시작: {filename}")
-        processed_img = preprocess_image_for_ocr(current_image_path)
-        if processed_img is not None:
-            ocr_input_data = processed_img # 전처리된 NumPy 배열 사용
-            processed_image_data_for_display = processed_img
+        processed_img_data = preprocess_image_for_ocr(current_image_path)
+        if processed_img_data is not None:
+            ocr_input_data = processed_img_data 
+            processed_image_for_display = processed_img_data
         else:
             logger.warning(f"작업자 {os.getpid()}: {filename}: 외부 전처리에 실패하여 원본 이미지로 OCR을 시도합니다.")
     
@@ -209,23 +213,20 @@ def process_single_image_task(args_tuple):
             for i, item in enumerate(extracted_data):
                  logger.debug(f"  - \"{item['text']}\" (신뢰도: {item['confidence']:.3f})")
         
-        if save_text_flag:
-            save_extracted_text(extracted_data, output_dir_path, filename)
+        if save_text:
+            save_extracted_text(extracted_data, output_dir, filename)
 
-        display_ocr_result(current_image_path, extracted_data, output_dir_path, filename,
-                           preprocessed_img=processed_image_data_for_display, 
-                           show_image_flag=display_images_flag,
-                           font_path_to_use=determined_font_path) # 결정된 폰트 경로 전달
+        display_ocr_result(current_image_path, extracted_data, output_dir, filename,
+                           preprocessed_img=processed_image_for_display, 
+                           show_image_flag=show_image,
+                           font_path_to_use=font_path)
     else:
         logger.info(f"작업자 {os.getpid()}: {filename}에서 텍스트를 추출하지 못했습니다.")
     
-    return f"{filename} 처리 완료" # 작업 완료 시 간단한 메시지 반환 (선택 사항)
+    return f"{filename} 처리 완료"
 
-
-if __name__ == "__main__":
-    multiprocessing.freeze_support()
-    setup_logger() 
-
+def parse_arguments():
+    """명령줄 인자를 파싱합니다."""
     parser = argparse.ArgumentParser(description="이미지 폴더에서 텍스트를 추출하는 OCR 스크립트입니다.", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("input_dir", nargs='?', default='input', 
                         help="텍스트를 추출할 이미지가 포함된 폴더의 경로입니다.\n(기본값: 'input')")
@@ -233,112 +234,93 @@ if __name__ == "__main__":
                         help="OCR 결과 이미지 및 텍스트 파일을 저장할 폴더 경로입니다.\n(기본값: 'output')")
     parser.add_argument("--lang", default='korean',
                         help="OCR에 사용할 언어입니다. 예: 'korean', 'en', 'japan', 'ch_sim'.\n(기본값: 'korean')")
-    # --num_workers 옵션 제거됨
     parser.add_argument("--show_image", action='store_true', help="처리된 각 이미지와 OCR 결과를 화면에 표시합니다.")
     parser.add_argument("--no_preprocess", action='store_true', help="이미지 전처리 단계를 건너뜁니다.")
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}', help="스크립트 버전을 표시하고 종료합니다.")
     parser.add_argument('--debug', action='store_true', help="디버그 레벨 로깅을 활성화하여 더 상세한 로그를 출력합니다.")
     parser.add_argument('--use_gpu', action='store_true', help="사용 가능한 경우 GPU를 사용하여 OCR 처리를 시도합니다.\n(NVIDIA GPU 및 CUDA 환경 필요)")
     parser.add_argument('--save_text', action='store_true', help="추출된 텍스트를 이미지와 동일한 기반 이름의 .txt 파일로 저장합니다.")
+    return parser.parse_args()
 
-    args = parser.parse_args()
-
-    if args.debug:
-        setup_logger(logging.DEBUG) 
-        logger.debug("디버그 모드가 활성화되었습니다.")
-
-    input_dir_path = args.input_dir
-    output_dir_path = args.output_dir
-    
-    if not os.path.isdir(input_dir_path):
-        logger.error(f"입력 디렉토리 '{input_dir_path}'가 없거나 디렉토리가 아닙니다. 종료합니다.")
+def prepare_directories(input_dir, output_dir):
+    """입력 및 출력 디렉토리를 확인하고, 출력 디렉토리가 없으면 생성합니다."""
+    if not os.path.isdir(input_dir):
+        logger.error(f"입력 디렉토리 '{input_dir}'가 없거나 디렉토리가 아닙니다. 종료합니다.")
         exit(1)
-    if not os.path.exists(output_dir_path):
+    if not os.path.exists(output_dir):
         try:
-            os.makedirs(output_dir_path)
-            logger.info(f"출력 디렉토리 생성: {output_dir_path}")
+            os.makedirs(output_dir)
+            logger.info(f"출력 디렉토리 생성: {output_dir}")
         except OSError as e:
-            logger.error(f"출력 디렉토리 '{output_dir_path}' 생성 실패: {e}")
+            logger.error(f"출력 디렉토리 '{output_dir}' 생성 실패: {e}")
             exit(1)
 
-    supported_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif')
-    image_files_to_process_names = [
-        f for f in os.listdir(input_dir_path) if f.lower().endswith(supported_extensions)
-    ]
+def main():
+    """스크립트의 메인 실행 로직입니다."""
+    multiprocessing.freeze_support()
+    args = parse_arguments()
     
-    if not image_files_to_process_names:
-        logger.warning(f"입력 디렉토리 '{input_dir_path}'에서 지원되는 이미지 파일을 찾을 수 없습니다.")
-        exit(0)
-
-    # num_workers는 항상 시스템 CPU 코어 수로 설정
-    num_workers = os.cpu_count()
-    logger.info(f"사용할 작업자 프로세스 수 (시스템 CPU 코어 수): {num_workers}")
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    setup_logging(log_level) 
 
     logger.info(f"OCR 스크립트 버전: {__version__}")
-    logger.info(f"입력 디렉토리: {input_dir_path}")
-    logger.info(f"출력 디렉토리: {output_dir_path}")
-    logger.info(f"선택 언어: {args.lang}")
-    logger.info(f"GPU 사용 시도: {args.use_gpu}")
-    logger.info(f"전처리 수행: {not args.no_preprocess}")
-    logger.info(f"결과 이미지 표시: {args.show_image}")
-    logger.info(f"추출 텍스트 파일 저장: {args.save_text}")
-    logger.info(f"총 {len(image_files_to_process_names)}개의 이미지 파일을 처리합니다.")
+    logger.info(f"명령줄 인자: {args}")
+
+    prepare_directories(args.input_dir, args.output_dir)
+
+    supported_extensions = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif')
+    image_filenames = [
+        f for f in os.listdir(args.input_dir) if f.lower().endswith(supported_extensions)
+    ]
+    
+    if not image_filenames:
+        logger.warning(f"입력 디렉토리 '{args.input_dir}'에서 지원되는 이미지 파일을 찾을 수 없습니다.")
+        exit(0)
+
+    num_workers = os.cpu_count()
+    logger.info(f"사용할 작업자 프로세스 수 (시스템 CPU 코어 수): {num_workers}")
+    logger.info(f"총 {len(image_filenames)}개의 이미지 파일을 처리합니다.")
 
     ocr_engine_params = {
         'use_angle_cls': True, 
         'lang': args.lang, 
         'use_gpu': args.use_gpu, 
-        'show_log': False 
+        'show_log': False # PaddleOCR 자체 로그는 Python logging으로 대체
     }
-    if '+' in args.lang:
+    if '+' in args.lang: # 복합 언어 설정에 대한 안내
         logger.info(f"복합 언어 설정 '{args.lang}' 감지. PaddleOCR이 해당 설정을 지원하는지 확인하세요.")
 
-    font_path_for_display = get_os_specific_font_path()
-    # 폰트 경로 결정에 대한 로그는 get_os_specific_font_path 내부 또는 아래에서 한 번만 출력되도록 관리
-    font_message_logged_this_run = False # 이 실행에서 폰트 메시지가 출력되었는지 추적
-    if font_path_for_display:
-        logger.info(f"텍스트 시각화에 사용할 자동 감지 폰트: {font_path_for_display}")
-        font_message_logged_this_run = True
-    else:
-        local_korean_font = './fonts/malgun.ttf'
-        if os.path.exists(local_korean_font):
-            font_path_for_display = local_korean_font
-            logger.info(f"로컬 한국어 폰트 사용 시도: {font_path_for_display}")
-            font_message_logged_this_run = True
-        else:
-            local_english_font = './fonts/arial.ttf'
-            if os.path.exists(local_english_font):
-                font_path_for_display = local_english_font
-                logger.warning(f"로컬 영문 대체 폰트 사용 시도: {font_path_for_display} (한글 깨짐 가능성)")
-                font_message_logged_this_run = True
-            else:
-                logger.warning("사용 가능한 특정 폰트를 찾지 못했습니다. 시각화 시 PaddleOCR 내부 기본 폰트 사용.")
-                font_message_logged_this_run = True # 메시지를 남겼으므로 true
+    # 시각화를 위한 폰트 경로 결정 (메인 프로세스에서 한 번)
+    font_path_for_tasks = determine_font_for_visualization()
 
-    tasks_args = []
-    for filename in image_files_to_process_names:
-        current_image_path = os.path.join(input_dir_path, filename)
-        tasks_args.append((
+    task_arguments_list = []
+    for filename in image_filenames:
+        current_image_path = os.path.join(args.input_dir, filename)
+        task_arguments_list.append((
             current_image_path, 
             filename, 
             ocr_engine_params, 
-            output_dir_path,
+            args.output_dir,
             args.no_preprocess, 
             args.save_text, 
             args.show_image,
-            font_path_for_display 
+            font_path_for_tasks 
         ))
 
     try:
         with multiprocessing.Pool(processes=num_workers) as pool:
-            results = list(tqdm(pool.starmap(process_single_image_task, tasks_args), 
-                                total=len(tasks_args), desc="전체 이미지 처리 중"))
-            for res_msg in results:
-                if res_msg: 
-                    logger.debug(res_msg) 
+            results = []
+            # tqdm으로 진행률 표시, 각 작업은 process_single_image_task 함수를 통해 실행
+            for result in tqdm(pool.imap_unordered(process_single_image_task, task_arguments_list), 
+                               total=len(task_arguments_list), desc="전체 이미지 처리 중"):
+                results.append(result) # 결과 수집 (선택적)
+                if result: # 작업자 함수가 메시지를 반환한 경우
+                    logger.debug(result) 
     except Exception as e:
         logger.error(f"병렬 처리 중 주 프로세스에서 오류 발생: {e}")
         
-    logger.info(f"총 {len(image_files_to_process_names)}개의 이미지 파일 처리가 완료되었습니다.")
+    logger.info(f"총 {len(image_filenames)}개의 이미지 파일 처리가 완료되었습니다.")
     logger.info("스크립트 실행 종료.")
 
+if __name__ == "__main__":
+    main()
