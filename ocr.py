@@ -14,9 +14,12 @@ import warnings # 경고 메시지 제어를 위해 warnings 모듈 임포트
 # 특정 모듈을 지정하지 않고 메시지 내용과 종류로 필터링
 warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
 
-from paddleocr import PaddleOCR, draw_ocr # PaddleOCR은 경고 필터 설정 후에 임포트
+# PaddleOCR은 경고 필터 설정 후에 임포트해야 필터가 적용될 가능성이 높아집니다.
+# 단, 이 임포트가 extract_text_from_image_worker 함수 내에서만 필요하다면 그곳으로 옮길 수 있습니다.
+# 현재는 전역적으로 사용될 수 있으므로 여기에 둡니다.
+from paddleocr import PaddleOCR, draw_ocr 
 
-__version__ = "0.9.5" # 스크립트 버전 정보 (ccache 경고 필터링 방식 수정)
+__version__ = "0.9.6" # 스크립트 버전 정보 (프로세스 시작 방식 변경, Pool 종료 로깅 강화)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -30,16 +33,23 @@ def setup_logging(level=logging.INFO):
         formatter = logging.Formatter('%(asctime)s - %(processName)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         ch.setFormatter(formatter)
         logger.addHandler(ch)
+        logger.propagate = False # 루트 로거로의 전파 방지 (중복 로그 방지)
     else: 
         logger.setLevel(level)
         for handler in logger.handlers:
             handler.setLevel(level)
+            # 이미 핸들러가 있는 경우에도 전파 방지 설정 확인
+            if isinstance(handler, logging.StreamHandler):
+                 logger.propagate = False
+
 
 def worker_initializer():
     """각 작업자 프로세스 시작 시 호출될 초기화 함수입니다."""
-    # 작업자 레벨에서도 ccache 경고 필터 적용
     warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
-    logger.debug(f"작업자 {os.getpid()}: 경고 필터 초기화 완료.")
+    log_level_str = os.environ.get('OCR_LOG_LEVEL', 'INFO').upper()
+    log_level = getattr(logging, log_level_str, logging.INFO)
+    setup_logging(log_level) # 각 작업자도 로깅 설정을 갖도록 함
+    logger.debug(f"작업자 {os.getpid()}: 초기화 완료 (경고 필터 적용, 로깅 레벨: {log_level_str}).")
 
 
 def preprocess_image_for_ocr(image_path):
@@ -64,6 +74,7 @@ def preprocess_image_for_ocr(image_path):
 
 def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_log=""):
     """주어진 이미지 데이터에서 텍스트를 추출합니다. (작업자 프로세스용)"""
+    ocr_engine = None # 명시적 초기화
     try:
         logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 초기화 중... (파일: {filename_for_log}, 파라미터: {ocr_engine_params})")
         ocr_engine = PaddleOCR(**ocr_engine_params)
@@ -85,8 +96,13 @@ def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_l
                 })
         return extracted_texts
     except Exception as e:
-        logger.error(f"작업자 {os.getpid()}: OCR 처리 중 오류 (파일: {filename_for_log}): {e}")
+        logger.error(f"작업자 {os.getpid()}: OCR 처리 중 오류 (파일: {filename_for_log}): {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
         return None
+    finally:
+        if ocr_engine:
+            del ocr_engine # PaddleOCR 객체 명시적 삭제 시도
+            logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 삭제됨 (파일: {filename_for_log})")
+
 
 def get_system_font_path():
     """운영 체제에 맞는 기본 시스템 폰트 경로를 반환합니다 (존재 여부 확인 포함)."""
@@ -122,7 +138,12 @@ def determine_font_for_visualization():
         return font_path_to_use
 
     logger.info("시스템 폰트를 찾지 못하여 로컬 폰트를 확인합니다.")
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError: # __file__이 정의되지 않은 경우 (예: 인터랙티브 환경)
+        script_dir = os.getcwd()
+        logger.debug(f"__file__ 변수를 찾을 수 없어 현재 작업 디렉토리 사용: {script_dir}")
+
     local_korean_font = os.path.join(script_dir, 'fonts', 'malgun.ttf')
     if os.path.exists(local_korean_font):
         font_path_to_use = local_korean_font
@@ -180,7 +201,7 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
     except FileNotFoundError:
         logger.error(f"원본 이미지 파일 '{original_image_path}'을 찾을 수 없습니다 (결과 표시 중).")
     except Exception as e:
-        logger.error(f"OCR 결과 표시/저장 중 예외 발생 (파일: {original_filename}): {e}")
+        logger.error(f"OCR 결과 표시/저장 중 예외 발생 (파일: {original_filename}): {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
 
 def save_extracted_text(extracted_data, output_dir, original_filename):
     """추출된 텍스트를 .txt 파일로 저장합니다."""
@@ -206,39 +227,44 @@ def process_single_image_task(task_args_tuple):
     (current_image_path, filename, ocr_engine_params, output_dir, 
      skip_preprocessing, save_text, show_image, font_path) = task_args_tuple
     
-    logger.debug(f"작업자 {os.getpid()}: 처리 시작: {filename}")
-    
-    ocr_input_data = current_image_path
-    processed_image_for_display = None 
-
-    if not skip_preprocessing:
-        logger.debug(f"작업자 {os.getpid()}: 외부 전처리 시작: {filename}")
-        processed_img_data = preprocess_image_for_ocr(current_image_path)
-        if processed_img_data is not None:
-            ocr_input_data = processed_img_data 
-            processed_image_for_display = processed_img_data
-        else:
-            logger.warning(f"작업자 {os.getpid()}: {filename}: 외부 전처리에 실패하여 원본 이미지로 OCR을 시도합니다.")
-    
-    extracted_data = extract_text_from_image_worker(ocr_engine_params, ocr_input_data, filename_for_log=filename)
-
-    if extracted_data:
-        logger.debug(f"작업자 {os.getpid()}: 추출된 텍스트 항목 수 ({filename}): {len(extracted_data)}")
-        if logger.isEnabledFor(logging.DEBUG):
-            for i, item in enumerate(extracted_data):
-                 logger.debug(f"  - \"{item['text']}\" (신뢰도: {item['confidence']:.3f})")
+    try:
+        logger.debug(f"작업자 {os.getpid()}: 처리 시작: {filename}")
         
-        if save_text:
-            save_extracted_text(extracted_data, output_dir, filename)
+        ocr_input_data = current_image_path
+        processed_image_for_display = None 
 
-        display_ocr_result(current_image_path, extracted_data, output_dir, filename,
-                           preprocessed_img=processed_image_for_display, 
-                           show_image_flag=show_image,
-                           font_path_to_use=font_path)
-    else:
-        logger.info(f"작업자 {os.getpid()}: {filename}에서 텍스트를 추출하지 못했습니다.")
-    
-    return f"{filename} 처리 완료"
+        if not skip_preprocessing:
+            logger.debug(f"작업자 {os.getpid()}: 외부 전처리 시작: {filename}")
+            processed_img_data = preprocess_image_for_ocr(current_image_path)
+            if processed_img_data is not None:
+                ocr_input_data = processed_img_data 
+                processed_image_for_display = processed_img_data
+            else:
+                logger.warning(f"작업자 {os.getpid()}: {filename}: 외부 전처리에 실패하여 원본 이미지로 OCR을 시도합니다.")
+        
+        extracted_data = extract_text_from_image_worker(ocr_engine_params, ocr_input_data, filename_for_log=filename)
+
+        if extracted_data:
+            logger.debug(f"작업자 {os.getpid()}: 추출된 텍스트 항목 수 ({filename}): {len(extracted_data)}")
+            if logger.isEnabledFor(logging.DEBUG):
+                for i, item in enumerate(extracted_data):
+                     logger.debug(f"  - \"{item['text']}\" (신뢰도: {item['confidence']:.3f})")
+            
+            if save_text:
+                save_extracted_text(extracted_data, output_dir, filename)
+
+            display_ocr_result(current_image_path, extracted_data, output_dir, filename,
+                               preprocessed_img=processed_image_for_display, 
+                               show_image_flag=show_image,
+                               font_path_to_use=font_path)
+        else:
+            logger.info(f"작업자 {os.getpid()}: {filename}에서 텍스트를 추출하지 못했습니다.")
+        
+        return f"{filename} 처리 완료"
+    except Exception as e:
+        logger.error(f"작업자 {os.getpid()}: process_single_image_task 내에서 예상치 못한 오류 발생 (파일: {filename}): {e}", exc_info=True)
+        return f"{filename} 처리 중 오류 발생"
+
 
 def parse_arguments():
     """명령줄 인자를 파싱합니다."""
@@ -272,14 +298,23 @@ def prepare_directories(input_dir, output_dir):
 
 def main():
     """스크립트의 메인 실행 로직입니다."""
-    multiprocessing.freeze_support()
+    # 멀티프로세싱 시작 방식 설정 (가능한 한 빨리, 다른 멀티프로세싱 관련 작업 전에)
+    # 'spawn'은 Windows에서는 기본값이며, macOS와 Linux에서도 더 안정적일 수 있음.
+    try:
+        if multiprocessing.get_start_method(allow_none=True) is None: # 아직 설정되지 않았다면
+            multiprocessing.set_start_method('spawn', force=True)
+            logger.debug("멀티프로세싱 시작 방식을 'spawn'으로 설정했습니다.")
+    except RuntimeError:
+        logger.debug("멀티프로세싱 시작 방식이 이미 설정되어 변경할 수 없습니다.")
+        pass # 이미 설정된 경우 무시
     
-    # 주 프로세스 시작 시점의 경고 필터는 이미 스크립트 최상단에 적용됨.
-    # worker_initializer에서도 각 작업자 프로세스에 대해 필터가 적용됨.
+    multiprocessing.freeze_support() # Windows에서 실행 파일로 만들 때 필요
 
     args = parse_arguments()
     
     log_level = logging.DEBUG if args.debug else logging.INFO
+    # 환경 변수를 통해 작업자 프로세스의 로그 레벨을 전달할 수 있도록 설정
+    os.environ['OCR_LOG_LEVEL'] = logging.getLevelName(log_level)
     setup_logging(log_level) 
 
     logger.info(f"OCR 스크립트 버전: {__version__}")
@@ -335,7 +370,13 @@ def main():
                 if result: 
                     logger.debug(f"작업 결과 수신: {result}")
             
-            logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다.")
+            logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다. 풀 종료를 시작합니다...")
+            # 'with' 문을 사용하면 pool.close()와 pool.join()이 자동으로 호출됩니다.
+            # 명시적으로 호출하여 로그를 추가해 볼 수 있습니다.
+            pool.close() 
+            logger.info("Pool.close() 호출 완료. 작업자 프로세스 종료 대기 중...")
+            pool.join()
+            logger.info("Pool.join() 호출 완료. 모든 작업자 프로세스가 종료되었습니다.")
             
     except Exception as e:
         logger.error(f"병렬 처리 중 주 프로세스에서 예상치 못한 오류 발생: {e}", exc_info=True)
