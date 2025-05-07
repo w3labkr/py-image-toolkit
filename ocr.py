@@ -14,12 +14,9 @@ import warnings # 경고 메시지 제어를 위해 warnings 모듈 임포트
 # 특정 모듈을 지정하지 않고 메시지 내용과 종류로 필터링
 warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
 
-# PaddleOCR은 경고 필터 설정 후에 임포트해야 필터가 적용될 가능성이 높아집니다.
-# 단, 이 임포트가 extract_text_from_image_worker 함수 내에서만 필요하다면 그곳으로 옮길 수 있습니다.
-# 현재는 전역적으로 사용될 수 있으므로 여기에 둡니다.
 from paddleocr import PaddleOCR, draw_ocr 
 
-__version__ = "0.9.6" # 스크립트 버전 정보 (프로세스 시작 방식 변경, Pool 종료 로깅 강화)
+__version__ = "0.9.7" # 스크립트 버전 정보 (최종 검토 및 정리)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -38,7 +35,6 @@ def setup_logging(level=logging.INFO):
         logger.setLevel(level)
         for handler in logger.handlers:
             handler.setLevel(level)
-            # 이미 핸들러가 있는 경우에도 전파 방지 설정 확인
             if isinstance(handler, logging.StreamHandler):
                  logger.propagate = False
 
@@ -53,17 +49,19 @@ def worker_initializer():
 
 
 def preprocess_image_for_ocr(image_path):
-    """OCR 정확도 향상을 위해 이미지를 전처리합니다."""
+    """OCR 정확도 향상을 위해 이미지를 전처리합니다. (버전 0.9.6 기준)"""
     try:
         img = cv2.imread(image_path)
         if img is None:
             logger.error(f"이미지를 불러올 수 없습니다: {image_path}")
             return None
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # CLAHE 대비 향상
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced_contrast_img = clahe.apply(gray_img)
-        denoised_img = cv2.medianBlur(enhanced_contrast_img, 3)
-        logger.debug(f"전처리 완료: {os.path.basename(image_path)}")
+        # 미디언 블러를 사용하여 노이즈 제거
+        denoised_img = cv2.medianBlur(enhanced_contrast_img, 3) # 커널 크기 3 또는 5
+        logger.debug(f"전처리 완료 (CLAHE, Median Blur): {os.path.basename(image_path)}")
         return denoised_img
     except cv2.error as e:
         logger.error(f"OpenCV 오류 (전처리, 파일: {os.path.basename(image_path)}): {e}")
@@ -238,7 +236,7 @@ def process_single_image_task(task_args_tuple):
             processed_img_data = preprocess_image_for_ocr(current_image_path)
             if processed_img_data is not None:
                 ocr_input_data = processed_img_data 
-                processed_image_for_display = processed_img_data
+                processed_image_for_display = processed_img_data # 전처리된 이미지를 시각화에 사용
             else:
                 logger.warning(f"작업자 {os.getpid()}: {filename}: 외부 전처리에 실패하여 원본 이미지로 OCR을 시도합니다.")
         
@@ -298,23 +296,19 @@ def prepare_directories(input_dir, output_dir):
 
 def main():
     """스크립트의 메인 실행 로직입니다."""
-    # 멀티프로세싱 시작 방식 설정 (가능한 한 빨리, 다른 멀티프로세싱 관련 작업 전에)
-    # 'spawn'은 Windows에서는 기본값이며, macOS와 Linux에서도 더 안정적일 수 있음.
     try:
-        if multiprocessing.get_start_method(allow_none=True) is None: # 아직 설정되지 않았다면
+        if multiprocessing.get_start_method(allow_none=True) is None: 
             multiprocessing.set_start_method('spawn', force=True)
             logger.debug("멀티프로세싱 시작 방식을 'spawn'으로 설정했습니다.")
     except RuntimeError:
         logger.debug("멀티프로세싱 시작 방식이 이미 설정되어 변경할 수 없습니다.")
-        pass # 이미 설정된 경우 무시
     
-    multiprocessing.freeze_support() # Windows에서 실행 파일로 만들 때 필요
+    multiprocessing.freeze_support() 
 
     args = parse_arguments()
     
     log_level = logging.DEBUG if args.debug else logging.INFO
-    # 환경 변수를 통해 작업자 프로세스의 로그 레벨을 전달할 수 있도록 설정
-    os.environ['OCR_LOG_LEVEL'] = logging.getLevelName(log_level)
+    os.environ['OCR_LOG_LEVEL'] = logging.getLevelName(log_level) # 작업자 프로세스용 로그 레벨 설정
     setup_logging(log_level) 
 
     logger.info(f"OCR 스크립트 버전: {__version__}")
@@ -370,13 +364,14 @@ def main():
                 if result: 
                     logger.debug(f"작업 결과 수신: {result}")
             
-            logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다. 풀 종료를 시작합니다...")
-            # 'with' 문을 사용하면 pool.close()와 pool.join()이 자동으로 호출됩니다.
-            # 명시적으로 호출하여 로그를 추가해 볼 수 있습니다.
-            pool.close() 
-            logger.info("Pool.close() 호출 완료. 작업자 프로세스 종료 대기 중...")
-            pool.join()
-            logger.info("Pool.join() 호출 완료. 모든 작업자 프로세스가 종료되었습니다.")
+            logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다.")
+            # 'with' 문을 사용하면 pool.close()와 pool.join()이 자동으로 호출되므로,
+            # 아래 명시적인 호출은 제거합니다.
+            # logger.info("풀 종료를 시작합니다...")
+            # pool.close() 
+            # logger.info("Pool.close() 호출 완료. 작업자 프로세스 종료 대기 중...")
+            # pool.join()
+            # logger.info("Pool.join() 호출 완료. 모든 작업자 프로세스가 종료되었습니다.")
             
     except Exception as e:
         logger.error(f"병렬 처리 중 주 프로세스에서 예상치 못한 오류 발생: {e}", exc_info=True)
