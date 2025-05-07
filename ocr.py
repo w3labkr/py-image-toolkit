@@ -9,8 +9,9 @@ import platform # 운영체제 감지를 위해 platform 모듈 임포트
 from tqdm import tqdm # 진행률 표시를 위해 tqdm 임포트
 import logging # 로깅 모듈 임포트
 import multiprocessing # 병렬 처리를 위해 multiprocessing 임포트
+import warnings # 경고 메시지 제어를 위해 warnings 모듈 임포트
 
-__version__ = "0.9.0" # 스크립트 버전 정보 (리팩토링)
+__version__ = "0.9.1" # 스크립트 버전 정보 (PaddlePaddle ccache 경고 필터링 추가)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -52,6 +53,10 @@ def preprocess_image_for_ocr(image_path):
 def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_log=""):
     """주어진 이미지 데이터에서 텍스트를 추출합니다. (작업자 프로세스용)"""
     try:
+        # 작업자 프로세스 내에서도 경고 필터가 적용되도록 한 번 더 설정할 수 있으나,
+        # 보통 부모 프로세스에서 설정한 필터가 상속됩니다.
+        # warnings.filterwarnings("ignore", category=UserWarning, module="paddle.utils.cpp_extension.extension_utils")
+        
         logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 초기화 중... (파일: {filename_for_log}, 파라미터: {ocr_engine_params})")
         ocr_engine = PaddleOCR(**ocr_engine_params)
         logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 초기화 완료. (파일: {filename_for_log})")
@@ -109,14 +114,16 @@ def determine_font_for_visualization():
         return font_path_to_use
 
     logger.info("시스템 폰트를 찾지 못하여 로컬 폰트를 확인합니다.")
-    local_korean_font = './fonts/malgun.ttf' # 스크립트 실행 위치 기준
+    # 스크립트가 위치한 디렉토리 기준으로 'fonts' 폴더 내 폰트 검색
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    local_korean_font = os.path.join(script_dir, 'fonts', 'malgun.ttf')
     if os.path.exists(local_korean_font):
         font_path_to_use = local_korean_font
         logger.info(f"로컬 한국어 폰트 사용: {font_path_to_use}")
         return font_path_to_use
 
     logger.info(f"로컬 한국어 폰트 '{local_korean_font}'를 찾지 못했습니다.")
-    local_english_font = './fonts/arial.ttf'
+    local_english_font = os.path.join(script_dir, 'fonts', 'arial.ttf')
     if os.path.exists(local_english_font):
         font_path_to_use = local_english_font
         logger.warning(f"로컬 영문 대체 폰트 사용: {font_path_to_use} (한글이 깨질 수 있습니다.)")
@@ -191,6 +198,10 @@ def process_single_image_task(task_args_tuple):
     (current_image_path, filename, ocr_engine_params, output_dir, 
      skip_preprocessing, save_text, show_image, font_path) = task_args_tuple
 
+    # 각 작업자 프로세스 시작 시 경고 필터 설정 (선택적, 부모에서 설정한 것이 상속될 수 있음)
+    warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
+
+
     logger.debug(f"작업자 {os.getpid()}: 처리 시작: {filename}")
     
     ocr_input_data = current_image_path
@@ -258,6 +269,14 @@ def prepare_directories(input_dir, output_dir):
 def main():
     """스크립트의 메인 실행 로직입니다."""
     multiprocessing.freeze_support()
+    
+    # PaddlePaddle ccache 경고 메시지 필터링
+    # 이 필터는 주 프로세스와 생성되는 모든 자식 프로세스에 영향을 미칩니다.
+    warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*", module="paddle.utils.cpp_extension.extension_utils")
+    # 다른 paddle 관련 경고도 필요시 추가 가능
+    # warnings.filterwarnings("ignore", category=UserWarning, module="paddle")
+
+
     args = parse_arguments()
     
     log_level = logging.DEBUG if args.debug else logging.INFO
@@ -290,7 +309,6 @@ def main():
     if '+' in args.lang: # 복합 언어 설정에 대한 안내
         logger.info(f"복합 언어 설정 '{args.lang}' 감지. PaddleOCR이 해당 설정을 지원하는지 확인하세요.")
 
-    # 시각화를 위한 폰트 경로 결정 (메인 프로세스에서 한 번)
     font_path_for_tasks = determine_font_for_visualization()
 
     task_arguments_list = []
@@ -308,13 +326,15 @@ def main():
         ))
 
     try:
+        # 멀티프로세싱 컨텍스트 설정 (특히 macOS에서 'fork' 관련 문제 방지 위해 'spawn' 명시 가능)
+        # ctx = multiprocessing.get_context('spawn')
+        # with ctx.Pool(processes=num_workers) as pool:
         with multiprocessing.Pool(processes=num_workers) as pool:
             results = []
-            # tqdm으로 진행률 표시, 각 작업은 process_single_image_task 함수를 통해 실행
             for result in tqdm(pool.imap_unordered(process_single_image_task, task_arguments_list), 
                                total=len(task_arguments_list), desc="전체 이미지 처리 중"):
-                results.append(result) # 결과 수집 (선택적)
-                if result: # 작업자 함수가 메시지를 반환한 경우
+                results.append(result) 
+                if result: 
                     logger.debug(result) 
     except Exception as e:
         logger.error(f"병렬 처리 중 주 프로세스에서 오류 발생: {e}")
