@@ -5,8 +5,9 @@ from PIL import Image
 import numpy as np # NumPy 임포트 (OpenCV 이미지 처리에 사용)
 import os # 파일 및 디렉토리 관리를 위해 os 모듈 임포트
 import argparse # 명령줄 인자 처리를 위해 argparse 모듈 임포트
+import platform # 운영체제 감지를 위해 platform 모듈 임포트
 
-__version__ = "0.2.0" # 스크립트 버전 정보
+__version__ = "0.3.0" # 스크립트 버전 정보 (OS 폰트 감지 기능 추가)
 
 def preprocess_image_for_ocr(image_path):
     """
@@ -116,10 +117,46 @@ def extract_text_from_image(image_path_or_data, lang='korean', preprocess=True):
         print(f"OCR 처리 중 오류 발생: {e}")
         return None
 
+def get_os_specific_font_path():
+    """
+    운영 체제에 맞는 기본 한글 폰트 경로를 반환합니다.
+    Returns:
+        str: 폰트 파일 경로 또는 None (적절한 폰트를 찾지 못한 경우)
+    """
+    system = platform.system()
+    font_path = None
+
+    if system == "Windows":
+        font_path = "C:/Windows/Fonts/malgun.ttf" # 맑은 고딕
+    elif system == "Darwin": # macOS
+        font_path = "/System/Library/Fonts/AppleSDGothicNeo.ttc" # Apple SD Gothic Neo
+    elif system == "Linux":
+        # 일반적인 나눔고딕 경로, 다른 경로에 있을 수 있음
+        common_linux_fonts = [
+            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
+            "/usr/share/fonts/korean/NanumGothic.ttf", # 다른 배포판 경로 예시
+            # 필요시 다른 한글 폰트 경로 추가
+        ]
+        for p in common_linux_fonts:
+            if os.path.exists(p):
+                font_path = p
+                break
+    
+    if font_path and os.path.exists(font_path):
+        print(f"OS 감지: {system}, 시스템 폰트 사용 시도: {font_path}")
+        return font_path
+    else:
+        if font_path: # 경로는 있었으나 파일이 없는 경우
+             print(f"OS 감지: {system}, 지정된 시스템 폰트 '{font_path}'를 찾을 수 없습니다.")
+        else: # OS에 대한 특정 경로가 없는 경우
+             print(f"OS 감지: {system}, 이 OS에 대한 기본 한글 폰트 경로가 설정되지 않았습니다.")
+        return None
+
+
 def display_ocr_result(original_image_path, extracted_data, output_dir, original_filename, 
                        preprocessed_img=None, show_image=False):
     """
-    OCR 결과를 이미지 위에 표시하고 저장합니다.
+    OCR 결과를 이미지 위에 표시하고 저장합니다. OS에 맞는 폰트를 자동으로 사용하려고 시도합니다.
 
     Args:
         original_image_path (str): 원본 이미지 파일 경로입니다.
@@ -137,34 +174,51 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
         if preprocessed_img is not None:
             if len(preprocessed_img.shape) == 2: # 그레이스케일 이미지인 경우
                 image_to_draw_on = cv2.cvtColor(preprocessed_img, cv2.COLOR_GRAY2RGB)
-            else: # 이미 컬러 이미지인 경우 (예: 전처리 단계에서 컬러 유지)
+            else: # 이미 컬러 이미지인 경우
                 image_to_draw_on = preprocessed_img
             image = Image.fromarray(image_to_draw_on)
         else:
-            image = Image.open(original_image_path).convert('RGB') # 원본 이미지 로드
+            image = Image.open(original_image_path).convert('RGB')
 
         boxes = [item['bounding_box'] for item in extracted_data]
         txts = [item['text'] for item in extracted_data]
         scores = [item['confidence'] for item in extracted_data]
 
-        font_path = './fonts/malgun.ttf' 
-        default_font_path = './fonts/arial.ttf'
+        # 폰트 경로 결정 로직
+        font_path = get_os_specific_font_path() # 1순위: OS 자동 감지 폰트
+        
+        # OS 자동 감지 폰트가 없거나 실패 시, 로컬 폴더의 폰트 시도
+        if not font_path:
+            local_font_path = './fonts/malgun.ttf'
+            if os.path.exists(local_font_path):
+                font_path = local_font_path
+                print(f"로컬 폰트 사용 시도: {font_path}")
+            else:
+                print(f"로컬 폰트 '{local_font_path}'를 찾을 수 없습니다.")
+
+        # 그래도 폰트가 없으면 영문 대체 폰트 시도
+        if not font_path:
+            default_font_path = './fonts/arial.ttf'
+            if os.path.exists(default_font_path):
+                font_path = default_font_path
+                print(f"영문 대체 로컬 폰트 사용 시도: {font_path} (한글이 깨질 수 있음)")
+            else:
+                print(f"영문 대체 로컬 폰트 '{default_font_path}'도 찾을 수 없습니다.")
+        
+        # 최종적으로 폰트 경로가 설정되었는지 확인
+        if font_path and not os.path.exists(font_path):
+            print(f"경고: 최종 선택된 폰트 '{font_path}'를 찾을 수 없습니다. 폰트 없이 텍스트를 표시합니다.")
+            font_path = None # 파일이 없으면 None으로 설정하여 draw_ocr이 내부 기본값 사용
 
         try:
+            if font_path:
+                print(f"텍스트 렌더링에 사용할 폰트: {font_path}")
+            else:
+                print("사용 가능한 폰트를 찾지 못했습니다. 폰트 없이 텍스트를 표시합니다 (PaddleOCR 기본값 사용).")
             im_show = draw_ocr(image, boxes, txts, scores, font_path=font_path)
-        except FileNotFoundError:
-            print(f"경고: 주 폰트 파일 '{font_path}'를 찾을 수 없습니다. 대체 폰트를 사용합니다. (한글이 깨질 수 있음)")
-            try:
-                im_show = draw_ocr(image, boxes, txts, scores, font_path=default_font_path)
-            except FileNotFoundError:
-                print(f"경고: 대체 폰트 파일 '{default_font_path}'도 찾을 수 없습니다. 텍스트 없이 바운딩 박스만 표시될 수 있습니다.")
-                im_show = draw_ocr(image, boxes, font_path=None)
-            except Exception as font_ex:
-                 print(f"대체 폰트 로딩 중 오류: {font_ex}")
-                 im_show = draw_ocr(image, boxes, font_path=None)
         except Exception as e:
-            print(f"draw_ocr 중 오류 발생: {e}. 폰트 없이 시도합니다.")
-            im_show = draw_ocr(image, boxes, font_path=None)
+            print(f"draw_ocr 중 오류 발생 (폰트: {font_path}): {e}. 폰트 없이 재시도합니다.")
+            im_show = draw_ocr(image, boxes, font_path=None) # 폰트 없이 시도
 
 
         im_show_pil = Image.fromarray(im_show)
@@ -196,15 +250,8 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # --version 인자가 사용되면, argparse가 자동으로 버전 정보를 출력하고 종료하므로
-    # input_dir이 None인지 여부로 실제 OCR 작업을 수행할지 결정합니다.
     if args.input_dir is None:
-        # input_dir이 제공되지 않았고, --version 인자가 사용되지 않았다면 사용법을 출력하거나,
-        # 여기서는 --version이 우선적으로 처리되므로 이 블록은 일반적인 경우에 도달하지 않을 수 있습니다.
-        # 만약 input_dir을 필수로 하고 싶다면 nargs='?'를 제거하고, 아래 로직을 조정해야 합니다.
-        # 현재는 input_dir 없이 실행하면 (그리고 --version도 없다면) 에러 없이 종료됩니다.
-        # 사용자가 input_dir 없이 실행했을 때 도움말을 보여주려면 parser.print_help()를 호출할 수 있습니다.
-        if not any(arg.startswith('--version') or arg == '-v' for arg in os.sys.argv): # --version 외의 경우
+        if not any(arg.startswith('--version') or arg == '-v' for arg in os.sys.argv):
              parser.print_help()
         exit(0)
 
@@ -283,5 +330,5 @@ if __name__ == "__main__":
         print(f"\n총 {image_files_processed_count}개의 이미지 파일 처리가 완료되었습니다.")
 
     print("\n스크립트 실행 종료.")
-    print("참고: OCR 결과 시각화 시 폰트 경로('./fonts/malgun.ttf' 또는 시스템 폰트 경로)가 올바른지 확인하세요.")
-    print("      한글 폰트가 없거나 경로가 잘못되면 시각화된 이미지의 글자가 깨질 수 있습니다.")
+    print("참고: OS 자동 감지 폰트 또는 로컬 './fonts/' 폴더의 폰트 사용을 시도합니다.")
+    print("      적절한 한글 폰트를 찾지 못하면 시각화된 이미지의 글자가 깨질 수 있습니다.")
