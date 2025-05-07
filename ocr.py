@@ -9,13 +9,15 @@ from tqdm import tqdm # 진행률 표시를 위해 tqdm 임포트
 import logging # 로깅 모듈 임포트
 import multiprocessing # 병렬 처리를 위해 multiprocessing 임포트
 import warnings # 경고 메시지 제어를 위해 warnings 모듈 임포트
+import csv # CSV 파일 처리를 위해 csv 모듈 임포트
+import re # 텍스트 라벨링을 위한 정규 표현식 모듈
 
 # 스크립트 시작 시점에 ccache 경고 필터 설정 (PaddleOCR 임포트 전에 적용되도록)
 warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
 
 from paddleocr import PaddleOCR, draw_ocr 
 
-__version__ = "0.9.8" # 스크립트 버전 정보 (Pool 종료 명시화 및 로깅 강화)
+__version__ = "1.0.0" # 스크립트 버전 정보 (텍스트 라벨링 및 CSV 저장 기능 추가)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -79,24 +81,81 @@ def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_l
         result = ocr_engine.ocr(image_data, cls=True)
         logger.debug(f"작업자 {os.getpid()}: OCR 완료: {filename_for_log}")
 
-        extracted_texts = []
+        extracted_items = [] # item은 {'text': ..., 'confidence': ..., 'bounding_box': ...} 형태
         if result and result[0] is not None:
             for line_info in result[0]:
                 text, confidence = line_info[1]
                 bounding_box = line_info[0]
-                extracted_texts.append({
+                extracted_items.append({
                     "text": text,
                     "confidence": confidence,
                     "bounding_box": bounding_box
                 })
-        return extracted_texts
+        return extracted_items # 이제 딕셔너리 리스트를 반환
     except Exception as e:
         logger.error(f"작업자 {os.getpid()}: OCR 처리 중 오류 (파일: {filename_for_log}): {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
-        return None
+        return None # 오류 시 None 반환
     finally:
         if ocr_engine:
             del ocr_engine 
             logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 삭제됨 (파일: {filename_for_log})")
+
+def label_text_item(extracted_item, image_width, image_height):
+    """추출된 텍스트 항목에 라벨을 할당합니다."""
+    text = extracted_item['text']
+    box = extracted_item['bounding_box'] # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
+    
+    # 바운딩 박스의 y-중심 계산 (상대적 위치 판단용)
+    # box가 비어있거나 유효하지 않은 경우를 대비
+    y_center = 0
+    if box and len(box) == 4 and all(len(pt) == 2 for pt in box):
+        y_center = sum(pt[1] for pt in box) / 4
+    else:
+        logger.warning(f"유효하지 않은 바운딩 박스 데이터로 라벨링 시도: {box} (텍스트: {text})")
+        # 유효하지 않은 박스 정보로는 위치 기반 휴리스틱 사용 불가
+
+    # 1. 주민등록번호 (ID Number)
+    # 숫자6-숫자7 또는 숫자13자리(하이픈 제거 시) 또는 숫자6 - 숫자7 (공백 포함)
+    if re.fullmatch(r"\d{6}\s*-\s*\d{7}", text) or \
+       re.fullmatch(r"\d{13}", text.replace("-","").replace(" ","")):
+        return "주민등록번호"
+        
+    # 2. 이름 (Name) - 한글 2~5자. 신분증에서는 보통 상단에 위치
+    # 좀 더 관대한 이름 패턴: "홍 길동", "김철수", "선우 용녀" 등 (성과 이름 사이 공백 허용)
+    # 길이가 2~5자인 한글 (공백 제외)
+    cleaned_text = text.replace(" ","")
+    if 2 <= len(cleaned_text) <= 5 and re.fullmatch(r"^[가-힣]+$", cleaned_text):
+        # 이름은 보통 사진 근처, 주민등록번호 위에 위치하는 경향
+        # 이미지 상단 45% 이내에 있고, 길이가 너무 길지 않은 경우 (4자 이내)
+        if y_center > 0 and y_center < image_height * 0.45 and len(cleaned_text) <= 4 :
+             return "이름"
+        # 또는 "이름"이라는 명시적 키워드가 이미지에 있다면 그 근처일 수도 있음 (여기선 미구현)
+
+    # 3. 발급일 (Issue Date)
+    if re.search(r"\d{4}\s*[\.,년]\s*\d{1,2}\s*[\.,월]\s*\d{1,2}\s*[\.일]?", text): # 마침표 허용
+        return "발급일"
+        
+    # 4. 발급기관 (Issuing Authority)
+    if text.endswith("청장") or text.endswith("시장") or text.endswith("군수") or text.endswith("구청장") or \
+       text.endswith("경찰서장") or text.endswith("지방경찰청장"):
+        return "발급기관"
+        
+    # 5. 주소 키워드 (Address keywords)
+    # 주소는 여러 줄에 걸쳐 나타날 수 있으므로, 키워드 포함 시 "주소_부분"으로 라벨링하고
+    # 후처리에서 인접한 "주소_부분"들을 합치는 것을 고려할 수 있음.
+    # 여기서는 단순하게 "주소"로 분류.
+    address_keywords = ["특별시", "광역시", "도", "시 ", "군 ", "구 ", "읍 ", "면 ", "동 ", "리 ", "로 ", "길 ", "아파트", "빌라", " 번지", " 호"]
+    for keyword in address_keywords:
+        if keyword.strip() in text: 
+            return "주소" 
+
+    # 6. "주민등록증" 또는 "운전면허증" 등의 문서명
+    doc_titles = ["주민등록증", "운전면허증"]
+    for title in doc_titles:
+        if title in text and y_center > 0 and y_center < image_height * 0.25: # 상단 25% 이내
+            return "문서명"
+
+    return "기타" # 위 조건에 해당하지 않으면 "기타"
 
 
 def get_system_font_path():
@@ -160,7 +219,7 @@ def determine_font_for_visualization():
 def display_ocr_result(original_image_path, extracted_data, output_dir, original_filename, 
                        preprocessed_img=None, show_image_flag=False, font_path_to_use=None):
     """OCR 결과를 이미지 위에 표시하고 저장합니다."""
-    if not extracted_data:
+    if not extracted_data: # extracted_data는 이제 item의 리스트
         logger.info(f"{original_filename}: 시각화할 OCR 결과가 없습니다.")
         return
 
@@ -171,6 +230,7 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
         else:
             image = Image.open(original_image_path).convert('RGB')
 
+        # draw_ocr에 필요한 형식으로 변환
         boxes = [item['bounding_box'] for item in extracted_data]
         txts = [item['text'] for item in extracted_data]
         scores = [item['confidence'] for item in extracted_data]
@@ -198,35 +258,31 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
     except Exception as e:
         logger.error(f"OCR 결과 표시/저장 중 예외 발생 (파일: {original_filename}): {e}", exc_info=logger.isEnabledFor(logging.DEBUG))
 
-def save_extracted_text(extracted_data, output_dir, original_filename):
-    """추출된 텍스트를 .txt 파일로 저장합니다."""
-    if not extracted_data:
-        logger.info(f"{original_filename}: 저장할 추출된 텍스트가 없습니다.")
-        return
-
-    base, _ = os.path.splitext(original_filename)
-    output_text_filename = f"{base}_ocr_text.txt" 
-    output_text_path = os.path.join(output_dir, output_text_filename)
-
-    try:
-        with open(output_text_path, 'w', encoding='utf-8') as f:
-            for item in extracted_data:
-                f.write(item['text'] + '\n')
-        logger.info(f"추출된 텍스트가 {output_text_path}에 저장되었습니다.")
-    except IOError as e:
-        logger.error(f"텍스트 파일 저장 중 오류 (파일: {output_text_path}): {e}")
 
 # 병렬 처리를 위한 작업자 함수
 def process_single_image_task(task_args_tuple):
     """단일 이미지 처리 작업을 수행하는 함수 (multiprocessing.Pool의 작업자용)."""
     (current_image_path, filename, ocr_engine_params, output_dir, 
-     skip_preprocessing, save_text, show_image, font_path) = task_args_tuple
+     skip_preprocessing, save_text_flag, show_image, font_path) = task_args_tuple
     
+    # 작업자 함수 반환값: 라벨링된 텍스트 항목들의 리스트
+    # 각 항목: {'filename': ..., 'label': ..., 'text': ..., 'confidence': ..., 'bounding_box_str': ...}
+    labeled_results_for_this_image = []
+
     try:
         logger.debug(f"작업자 {os.getpid()}: 처리 시작: {filename}")
         
         ocr_input_data = current_image_path
         processed_image_for_display = None 
+        image_width, image_height = 0, 0
+
+        # 이미지 크기 가져오기 (라벨링 함수에서 위치 기반 휴리스틱에 사용)
+        try:
+            with Image.open(current_image_path) as img_pil:
+                image_width, image_height = img_pil.size
+        except Exception as e:
+            logger.error(f"작업자 {os.getpid()}: 이미지 크기 읽기 오류 ({filename}): {e}")
+            # 이미지 크기를 못 읽으면 위치 기반 라벨링이 어려워짐
 
         if not skip_preprocessing:
             logger.debug(f"작업자 {os.getpid()}: 외부 전처리 시작: {filename}")
@@ -237,28 +293,49 @@ def process_single_image_task(task_args_tuple):
             else:
                 logger.warning(f"작업자 {os.getpid()}: {filename}: 외부 전처리에 실패하여 원본 이미지로 OCR을 시도합니다.")
         
-        extracted_data = extract_text_from_image_worker(ocr_engine_params, ocr_input_data, filename_for_log=filename)
+        # extracted_items는 [{'text':..., 'confidence':..., 'bounding_box':...}, ...] 형태의 리스트
+        extracted_items = extract_text_from_image_worker(ocr_engine_params, ocr_input_data, filename_for_log=filename)
 
-        if extracted_data:
-            logger.debug(f"작업자 {os.getpid()}: 추출된 텍스트 항목 수 ({filename}): {len(extracted_data)}")
-            if logger.isEnabledFor(logging.DEBUG):
-                for i, item in enumerate(extracted_data):
-                     logger.debug(f"  - \"{item['text']}\" (신뢰도: {item['confidence']:.3f})")
+        if extracted_items:
+            logger.debug(f"작업자 {os.getpid()}: 추출된 텍스트 항목 수 ({filename}): {len(extracted_items)}")
             
-            if save_text:
-                save_extracted_text(extracted_data, output_dir, filename)
+            for item in extracted_items:
+                assigned_label = "기타" # 기본 라벨
+                if image_width > 0 and image_height > 0: # 이미지 크기를 아는 경우에만 라벨링 시도
+                    assigned_label = label_text_item(item, image_width, image_height)
+                
+                if logger.isEnabledFor(logging.DEBUG):
+                     logger.debug(f"  - 라벨: {assigned_label}, 텍스트: \"{item['text']}\" (신뢰도: {item['confidence']:.3f})")
+                
+                if save_text_flag:
+                    # CSV 저장을 위해 필요한 정보만 포함하여 리스트에 추가
+                    labeled_results_for_this_image.append({
+                        'filename': filename,
+                        'label': assigned_label,
+                        'text': item['text'].replace('"', '""'), # CSV 저장을 위해 큰따옴표 이스케이프
+                        'confidence': round(item['confidence'], 4),
+                        'bounding_box_str': str(item['bounding_box']) 
+                    })
 
-            display_ocr_result(current_image_path, extracted_data, output_dir, filename,
+            # 시각화는 라벨링 전의 extracted_items (원본 OCR 결과)를 사용
+            display_ocr_result(current_image_path, extracted_items, output_dir, filename,
                                preprocessed_img=processed_image_for_display, 
                                show_image_flag=show_image,
                                font_path_to_use=font_path)
         else:
             logger.info(f"작업자 {os.getpid()}: {filename}에서 텍스트를 추출하지 못했습니다.")
+            if save_text_flag: # 텍스트가 없어도 파일명은 기록 (선택적)
+                 labeled_results_for_this_image.append({
+                    'filename': filename, 'label': 'N/A', 'text': 'No text extracted', 
+                    'confidence': 0.0, 'bounding_box_str': 'N/A'
+                })
         
-        return f"성공: {filename}" # 성공 시 반환 메시지
+        return labeled_results_for_this_image # 라벨링된 결과 리스트 반환
     except Exception as e:
         logger.error(f"작업자 {os.getpid()}: process_single_image_task 내에서 예상치 못한 오류 발생 (파일: {filename}): {e}", exc_info=True)
-        return f"오류: {filename}" # 오류 발생 시 반환 메시지
+        if save_text_flag:
+            return [{'filename': filename, 'label': '오류', 'text': str(e), 'confidence': 0.0, 'bounding_box_str': 'N/A'}]
+        return [] # 오류 시 빈 리스트 반환
 
 
 def parse_arguments():
@@ -275,7 +352,7 @@ def parse_arguments():
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}', help="스크립트 버전을 표시하고 종료합니다.")
     parser.add_argument('--debug', action='store_true', help="디버그 레벨 로깅을 활성화하여 더 상세한 로그를 출력합니다.")
     parser.add_argument('--use_gpu', action='store_true', help="사용 가능한 경우 GPU를 사용하여 OCR 처리를 시도합니다.\n(NVIDIA GPU 및 CUDA 환경 필요)")
-    parser.add_argument('--save_text', action='store_true', help="추출된 텍스트를 이미지와 동일한 기반 이름의 .txt 파일로 저장합니다.")
+    parser.add_argument('--save_text', action='store_true', help="추출된 텍스트와 라벨을 output_dir에 'ocr_labeled_text.csv' 파일로 저장합니다.")
     return parser.parse_args()
 
 def prepare_directories(input_dir, output_dir):
@@ -351,20 +428,19 @@ def main():
             font_path_for_tasks 
         ))
     
-    pool = None # 명시적 초기화
+    all_labeled_results = [] # 모든 이미지의 라벨링된 텍스트 결과를 수집
+
+    pool = None 
     try:
         pool = multiprocessing.Pool(processes=num_workers, initializer=worker_initializer)
-        results = []
         logger.info("병렬 이미지 처리 시작...")
         
-        # pool.imap_unordered를 사용하여 작업 제출 및 결과 수신
-        # tqdm으로 진행률 표시
-        for result in tqdm(pool.imap_unordered(process_single_image_task, task_arguments_list), 
-                           total=len(task_arguments_list), desc="전체 이미지 처리 중"):
-            results.append(result) 
-            if result: 
-                logger.debug(f"작업 결과 수신: {result}")
-        
+        # pool.imap_unordered는 작업 완료 순서대로 결과를 반환 (각 결과는 딕셔너리 리스트)
+        for single_image_labeled_results in tqdm(pool.imap_unordered(process_single_image_task, task_arguments_list), 
+                                                 total=len(task_arguments_list), desc="전체 이미지 처리 중"):
+            if single_image_labeled_results: # 작업자 함수가 None이 아닌 리스트를 반환한 경우
+                all_labeled_results.extend(single_image_labeled_results)
+            
         logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다.")
             
     except Exception as e:
@@ -372,10 +448,29 @@ def main():
     finally:
         if pool:
             logger.info("풀 종료를 시작합니다...")
-            pool.close() # 더 이상 새 작업을 받지 않음
+            pool.close() 
             logger.info("Pool.close() 호출 완료. 작업자 프로세스 종료 대기 중...")
-            pool.join() # 모든 작업자 프로세스가 종료될 때까지 대기
+            pool.join() 
             logger.info("Pool.join() 호출 완료. 모든 작업자 프로세스가 종료되었습니다.")
+
+    # 모든 작업 완료 후 CSV 파일 작성
+    if args.save_text and all_labeled_results:
+        csv_output_path = os.path.join(args.output_dir, "ocr_labeled_text.csv")
+        # CSV 필드명 정의 (process_single_image_task 반환 딕셔너리 키와 일치)
+        fieldnames = ['filename', 'label', 'text', 'confidence', 'bounding_box_str']
+        try:
+            with open(csv_output_path, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader() # 헤더 작성
+                writer.writerows(all_labeled_results) # 데이터 작성
+            logger.info(f"추출 및 라벨링된 모든 텍스트가 {csv_output_path}에 저장되었습니다.")
+        except IOError as e:
+            logger.error(f"CSV 파일 저장 중 오류 ({csv_output_path}): {e}")
+        except Exception as e: # 다른 예외 처리
+            logger.error(f"CSV 파일 작성 중 예상치 못한 오류 발생: {e}", exc_info=True)
+
+    elif args.save_text:
+        logger.info("저장할 추출된 텍스트가 없어 ocr_labeled_text.csv 파일을 생성하지 않았습니다.")
         
     logger.info(f"총 {len(image_filenames)}개의 이미지 파일 처리가 완료되었습니다.")
     logger.info("스크립트 실행 종료.")
