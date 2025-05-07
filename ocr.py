@@ -548,9 +548,8 @@ def get_system_font_path():
         font_path = "/System/Library/Fonts/AppleSDGothicNeo.ttc" 
     elif system == "Linux":
         common_linux_fonts = [
-            "/usr/share/fonts/truetype/nanum/NanumGothic.ttf",
-            "/usr/share/fonts/korean/NanumGothic.ttf",
-            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 
+            "/usr/share/fonts/truetype/unfonts-core/UnDotum.ttf",
+            "/usr/share/fonts/truetype/unfonts-core/UnBatang.ttf",
         ]
         for p in common_linux_fonts:
             if os.path.exists(p):
