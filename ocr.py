@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found
 
 from paddleocr import PaddleOCR, draw_ocr 
 
-__version__ = "1.0.14" # 스크립트 버전 정보 (날짜 부분 조합 로직 재수정 및 디버깅 강화)
+__version__ = "1.0.15" # 스크립트 버전 정보 (날짜 부분 조합 로직 재수정 및 디버깅 강화)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -67,11 +67,55 @@ def preprocess_image_for_ocr(image_path):
         if img is None:
             logger.error(f"이미지를 불러올 수 없습니다: {image_path}")
             return None
+            
+        # 1. 수평 보정 작업 추가
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        # Canny 엣지 감지를 사용하여 이미지의 엣지 검출
+        edges = cv2.Canny(gray_img, 50, 150, apertureSize=3)
+        # 허프 변환을 사용하여 직선 검출
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=100, minLineLength=100, maxLineGap=10)
+        
+        if lines is not None and len(lines) > 0:
+            angles = []
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                # 수평에 가까운 선만 고려 (수직선은 제외)
+                if abs(x2 - x1) > abs(y2 - y1):  # 수평에 가까운 선
+                    angle = np.arctan2(y2 - y1, x2 - x1) * 180 / np.pi
+                    angles.append(angle)
+            
+            if angles:
+                # 중앙값을 사용하여 이상치의 영향 감소
+                median_angle = np.median(angles)
+                
+                # 각도가 -45° ~ 45° 범위를 벗어나면 조정 (큰 회전 방지)
+                if median_angle > 45:
+                    median_angle -= 90
+                elif median_angle < -45:
+                    median_angle += 90
+                    
+                # 회전 각도가 너무 작으면 회전하지 않음 (작은 기울기는 무시)
+                if abs(median_angle) > 0.5:
+                    logger.debug(f"이미지 회전 보정: {os.path.basename(image_path)}, 각도: {median_angle:.2f}°")
+                    # 이미지 중심을 기준으로 회전 변환 행렬 계산
+                    height, width = img.shape[:2]
+                    center = (width // 2, height // 2)
+                    rotation_matrix = cv2.getRotationMatrix2D(center, median_angle, 1.0)
+                    # 회전 변환 적용
+                    img = cv2.warpAffine(img, rotation_matrix, (width, height), 
+                                      flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+                    # 회전 후 다시 그레이스케일 변환
+                    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                else:
+                    logger.debug(f"이미지 회전이 필요하지 않음: {os.path.basename(image_path)}, 감지된 각도: {median_angle:.2f}°")
+        else:
+            logger.debug(f"직선을 감지할 수 없어 회전 보정을 건너뜁니다: {os.path.basename(image_path)}")
+        
+        # 2. 기존 전처리 과정
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced_contrast_img = clahe.apply(gray_img)
         denoised_img = cv2.medianBlur(enhanced_contrast_img, 3) 
-        logger.debug(f"전처리 완료 (CLAHE, Median Blur): {os.path.basename(image_path)}")
+        logger.debug(f"전처리 완료 (수평 보정, CLAHE, Median Blur): {os.path.basename(image_path)}")
         return denoised_img
     except cv2.error as e:
         logger.error(f"OpenCV 오류 (전처리, 파일: {os.path.basename(image_path)}): {e}")
@@ -79,6 +123,7 @@ def preprocess_image_for_ocr(image_path):
     except Exception as e:
         logger.error(f"예외 발생 (전처리, 파일: {os.path.basename(image_path)}): {e}")
         return None
+
 
 def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_log=""):
     """주어진 이미지 데이터에서 텍스트를 추출합니다. (작업자 프로세스용)"""
@@ -176,6 +221,30 @@ def get_box_width(box):
     return 0
 # --- 바운딩 박스 유틸리티 함수 끝 ---
 
+def reorder_korean_address(address_text):
+    """한국식 주소 형식을 올바른 순서로 재정렬합니다."""
+    # 특별시/광역시/도가 중간에 있는 경우 맨 앞으로 이동
+    address_patterns = [
+        # 도로명 주소 + 시/도가 뒤에 나온 경우 (법원로11길 서울특별시송파구 -> 서울특별시송파구 법원로11길)
+        r'([가-힣0-9]+(?:로|길)[0-9]*)\s+([가-힣]+(?:특별시|광역시|특별자치시|도|특별자치도)[가-힣]*(?:시|군|구)?)',
+        # 건물번호가 시/도보다 앞에 오는 경우
+        r'([0-9]+[A-Za-z]?(?:동|호|층|번지)?)\s+([가-힣]+(?:특별시|광역시|특별자치시|도|특별자치도)[가-힣]*(?:시|군|구)?)'
+    ]
+    
+    for pattern in address_patterns:
+        match = re.search(pattern, address_text)
+        if match:
+            part1, part2 = match.groups()
+            # 그룹2(시/도) + 그룹1(도로명/번지) 순서로 재정렬
+            reordered = re.sub(pattern, r'\2 \1', address_text)
+            logger.debug(f"주소 순서 재정렬: '{address_text}' -> '{reordered}'")
+            address_text = reordered
+            
+    # 동/호수 사이 띄어쓰기 수정 (예: B 동610호 -> B동610호)
+    address_text = re.sub(r'([0-9]+)\s+([A-Za-z])\s+동', r'\1\2동', address_text)
+    address_text = re.sub(r'([A-Za-z])\s+동', r'\1동', address_text)
+    
+    return address_text
 
 def label_text_item_initial(extracted_item, image_width, image_height):
     """추출된 텍스트 항목에 초기 라벨을 할당합니다."""
@@ -523,6 +592,8 @@ def refine_and_finalize_labels(labeled_items):
             address_items = []
             for item in labeled_items:
                 if item['label'] == '주소' and item not in [item for idx, item in enumerate(labeled_items) if idx in processed_indices]:
+                    # 단일 주소 항목도 순서 재정렬 적용
+                    item['text'] = reorder_korean_address(item['text'])
                     address_items.append(item)
             
             # 주소 항목이 여러 개면 좌상단에서 우하단 순으로 정렬하여 조합
@@ -557,7 +628,10 @@ def refine_and_finalize_labels(labeled_items):
                 
                 combined_address_text = combined_address_text.strip()
                 
+                # 주소 순서 재정렬 로직 추가
                 if combined_address_text:
+                    combined_address_text = reorder_korean_address(combined_address_text)
+                    
                     # 모든 주소 바운딩 박스를 포함하는 하나의 바운딩 박스 생성
                     all_coords = []
                     for addr_item in address_items:
