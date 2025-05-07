@@ -11,12 +11,11 @@ import multiprocessing # 병렬 처리를 위해 multiprocessing 임포트
 import warnings # 경고 메시지 제어를 위해 warnings 모듈 임포트
 
 # 스크립트 시작 시점에 ccache 경고 필터 설정 (PaddleOCR 임포트 전에 적용되도록)
-# 특정 모듈을 지정하지 않고 메시지 내용과 종류로 필터링
 warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
 
 from paddleocr import PaddleOCR, draw_ocr 
 
-__version__ = "0.9.7" # 스크립트 버전 정보 (최종 검토 및 정리)
+__version__ = "0.9.8" # 스크립트 버전 정보 (Pool 종료 명시화 및 로깅 강화)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -30,7 +29,7 @@ def setup_logging(level=logging.INFO):
         formatter = logging.Formatter('%(asctime)s - %(processName)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         ch.setFormatter(formatter)
         logger.addHandler(ch)
-        logger.propagate = False # 루트 로거로의 전파 방지 (중복 로그 방지)
+        logger.propagate = False 
     else: 
         logger.setLevel(level)
         for handler in logger.handlers:
@@ -44,23 +43,21 @@ def worker_initializer():
     warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found.*")
     log_level_str = os.environ.get('OCR_LOG_LEVEL', 'INFO').upper()
     log_level = getattr(logging, log_level_str, logging.INFO)
-    setup_logging(log_level) # 각 작업자도 로깅 설정을 갖도록 함
+    setup_logging(log_level) 
     logger.debug(f"작업자 {os.getpid()}: 초기화 완료 (경고 필터 적용, 로깅 레벨: {log_level_str}).")
 
 
 def preprocess_image_for_ocr(image_path):
-    """OCR 정확도 향상을 위해 이미지를 전처리합니다. (버전 0.9.6 기준)"""
+    """OCR 정확도 향상을 위해 이미지를 전처리합니다. (버전 0.9.6/0.9.7 기준)"""
     try:
         img = cv2.imread(image_path)
         if img is None:
             logger.error(f"이미지를 불러올 수 없습니다: {image_path}")
             return None
         gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        # CLAHE 대비 향상
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced_contrast_img = clahe.apply(gray_img)
-        # 미디언 블러를 사용하여 노이즈 제거
-        denoised_img = cv2.medianBlur(enhanced_contrast_img, 3) # 커널 크기 3 또는 5
+        denoised_img = cv2.medianBlur(enhanced_contrast_img, 3) 
         logger.debug(f"전처리 완료 (CLAHE, Median Blur): {os.path.basename(image_path)}")
         return denoised_img
     except cv2.error as e:
@@ -72,7 +69,7 @@ def preprocess_image_for_ocr(image_path):
 
 def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_log=""):
     """주어진 이미지 데이터에서 텍스트를 추출합니다. (작업자 프로세스용)"""
-    ocr_engine = None # 명시적 초기화
+    ocr_engine = None 
     try:
         logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 초기화 중... (파일: {filename_for_log}, 파라미터: {ocr_engine_params})")
         ocr_engine = PaddleOCR(**ocr_engine_params)
@@ -98,7 +95,7 @@ def extract_text_from_image_worker(ocr_engine_params, image_data, filename_for_l
         return None
     finally:
         if ocr_engine:
-            del ocr_engine # PaddleOCR 객체 명시적 삭제 시도
+            del ocr_engine 
             logger.debug(f"작업자 {os.getpid()}: PaddleOCR 엔진 삭제됨 (파일: {filename_for_log})")
 
 
@@ -138,7 +135,7 @@ def determine_font_for_visualization():
     logger.info("시스템 폰트를 찾지 못하여 로컬 폰트를 확인합니다.")
     try:
         script_dir = os.path.dirname(os.path.abspath(__file__))
-    except NameError: # __file__이 정의되지 않은 경우 (예: 인터랙티브 환경)
+    except NameError: 
         script_dir = os.getcwd()
         logger.debug(f"__file__ 변수를 찾을 수 없어 현재 작업 디렉토리 사용: {script_dir}")
 
@@ -236,7 +233,7 @@ def process_single_image_task(task_args_tuple):
             processed_img_data = preprocess_image_for_ocr(current_image_path)
             if processed_img_data is not None:
                 ocr_input_data = processed_img_data 
-                processed_image_for_display = processed_img_data # 전처리된 이미지를 시각화에 사용
+                processed_image_for_display = processed_img_data 
             else:
                 logger.warning(f"작업자 {os.getpid()}: {filename}: 외부 전처리에 실패하여 원본 이미지로 OCR을 시도합니다.")
         
@@ -258,10 +255,10 @@ def process_single_image_task(task_args_tuple):
         else:
             logger.info(f"작업자 {os.getpid()}: {filename}에서 텍스트를 추출하지 못했습니다.")
         
-        return f"{filename} 처리 완료"
+        return f"성공: {filename}" # 성공 시 반환 메시지
     except Exception as e:
         logger.error(f"작업자 {os.getpid()}: process_single_image_task 내에서 예상치 못한 오류 발생 (파일: {filename}): {e}", exc_info=True)
-        return f"{filename} 처리 중 오류 발생"
+        return f"오류: {filename}" # 오류 발생 시 반환 메시지
 
 
 def parse_arguments():
@@ -308,7 +305,7 @@ def main():
     args = parse_arguments()
     
     log_level = logging.DEBUG if args.debug else logging.INFO
-    os.environ['OCR_LOG_LEVEL'] = logging.getLevelName(log_level) # 작업자 프로세스용 로그 레벨 설정
+    os.environ['OCR_LOG_LEVEL'] = logging.getLevelName(log_level) 
     setup_logging(log_level) 
 
     logger.info(f"OCR 스크립트 버전: {__version__}")
@@ -353,28 +350,32 @@ def main():
             args.show_image,
             font_path_for_tasks 
         ))
-
+    
+    pool = None # 명시적 초기화
     try:
-        with multiprocessing.Pool(processes=num_workers, initializer=worker_initializer) as pool:
-            results = []
-            logger.info("병렬 이미지 처리 시작...")
-            for result in tqdm(pool.imap_unordered(process_single_image_task, task_arguments_list), 
-                               total=len(task_arguments_list), desc="전체 이미지 처리 중"):
-                results.append(result) 
-                if result: 
-                    logger.debug(f"작업 결과 수신: {result}")
-            
-            logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다.")
-            # 'with' 문을 사용하면 pool.close()와 pool.join()이 자동으로 호출되므로,
-            # 아래 명시적인 호출은 제거합니다.
-            # logger.info("풀 종료를 시작합니다...")
-            # pool.close() 
-            # logger.info("Pool.close() 호출 완료. 작업자 프로세스 종료 대기 중...")
-            # pool.join()
-            # logger.info("Pool.join() 호출 완료. 모든 작업자 프로세스가 종료되었습니다.")
+        pool = multiprocessing.Pool(processes=num_workers, initializer=worker_initializer)
+        results = []
+        logger.info("병렬 이미지 처리 시작...")
+        
+        # pool.imap_unordered를 사용하여 작업 제출 및 결과 수신
+        # tqdm으로 진행률 표시
+        for result in tqdm(pool.imap_unordered(process_single_image_task, task_arguments_list), 
+                           total=len(task_arguments_list), desc="전체 이미지 처리 중"):
+            results.append(result) 
+            if result: 
+                logger.debug(f"작업 결과 수신: {result}")
+        
+        logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다.")
             
     except Exception as e:
         logger.error(f"병렬 처리 중 주 프로세스에서 예상치 못한 오류 발생: {e}", exc_info=True)
+    finally:
+        if pool:
+            logger.info("풀 종료를 시작합니다...")
+            pool.close() # 더 이상 새 작업을 받지 않음
+            logger.info("Pool.close() 호출 완료. 작업자 프로세스 종료 대기 중...")
+            pool.join() # 모든 작업자 프로세스가 종료될 때까지 대기
+            logger.info("Pool.join() 호출 완료. 모든 작업자 프로세스가 종료되었습니다.")
         
     logger.info(f"총 {len(image_filenames)}개의 이미지 파일 처리가 완료되었습니다.")
     logger.info("스크립트 실행 종료.")
