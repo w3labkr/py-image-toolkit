@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found
 
 from paddleocr import PaddleOCR, draw_ocr 
 
-__version__ = "1.0.2" # 스크립트 버전 정보 (Manager.Lock 사용 및 initargs 수정)
+__version__ = "1.0.3" # 스크립트 버전 정보 (CSV 항상 출력으로 변경)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -253,11 +253,10 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
 # 병렬 처리를 위한 작업자 함수
 def process_single_image_task(task_args_tuple):
     """단일 이미지 처리 작업을 수행하는 함수 (multiprocessing.Pool의 작업자용)."""
-    # _worker_csv_lock 와 _worker_csv_file_path 는 이제 worker_initializer_func 를 통해 설정된 전역 변수 사용
-    global _worker_csv_lock, _worker_csv_file_path
+    global _worker_csv_lock, _worker_csv_file_path # 작업자 내 전역 변수 사용
     
     (current_image_path, filename, ocr_engine_params, output_dir, 
-     skip_preprocessing, save_text_flag, show_image, font_path) = task_args_tuple
+     skip_preprocessing, show_image, font_path) = task_args_tuple # save_text_flag 제거
     
     status_message = f"{filename} 처리 중 오류 발생" 
 
@@ -297,16 +296,16 @@ def process_single_image_task(task_args_tuple):
                 if logger.isEnabledFor(logging.DEBUG):
                      logger.debug(f"  - 라벨: {assigned_label}, 텍스트: \"{item['text']}\" (신뢰도: {item['confidence']:.3f})")
                 
-                if save_text_flag:
-                    labeled_results_for_csv.append([
-                        filename,
-                        assigned_label,
-                        item['text'].replace('"', '""'), 
-                        round(item['confidence'], 4),
-                        str(item['bounding_box']) 
-                    ])
+                # CSV 저장은 항상 수행 (save_text_flag 제거)
+                labeled_results_for_csv.append([
+                    filename,
+                    assigned_label,
+                    item['text'].replace('"', '""'), 
+                    round(item['confidence'], 4),
+                    str(item['bounding_box']) 
+                ])
             
-            if save_text_flag and labeled_results_for_csv and _worker_csv_lock and _worker_csv_file_path:
+            if labeled_results_for_csv and _worker_csv_lock and _worker_csv_file_path:
                 with _worker_csv_lock: 
                     try:
                         with open(_worker_csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
@@ -346,7 +345,7 @@ def parse_arguments():
     parser.add_argument('--version', action='version', version=f'%(prog)s {__version__}', help="스크립트 버전을 표시하고 종료합니다.")
     parser.add_argument('--debug', action='store_true', help="디버그 레벨 로깅을 활성화하여 더 상세한 로그를 출력합니다.")
     parser.add_argument('--use_gpu', action='store_true', help="사용 가능한 경우 GPU를 사용하여 OCR 처리를 시도합니다.\n(NVIDIA GPU 및 CUDA 환경 필요)")
-    parser.add_argument('--save_text', action='store_true', help="추출된 텍스트와 라벨을 output_dir에 'ocr_labeled_text.csv' 파일로 저장합니다.")
+    # --save_text 옵션 제거됨
     return parser.parse_args()
 
 def prepare_directories(input_dir, output_dir):
@@ -376,7 +375,6 @@ def main():
     args = parse_arguments()
     
     log_level = logging.DEBUG if args.debug else logging.INFO
-    # 환경 변수 이름을 worker_initializer_func에 전달할 이름과 일치시킴
     log_level_env_name = 'OCR_WORKER_LOG_LEVEL' 
     os.environ[log_level_env_name] = logging.getLevelName(log_level) 
     setup_logging(log_level) 
@@ -410,49 +408,43 @@ def main():
 
     font_path_for_tasks = determine_font_for_visualization()
     
-    csv_output_file_path = None
-    # Manager를 사용하여 Lock 객체 생성 (spawn/forkserver 호환)
+    # CSV 파일은 항상 생성됨
+    csv_output_file_path = os.path.join(args.output_dir, "ocr_labeled_text.csv")
     manager = multiprocessing.Manager()
-    csv_file_lock = manager.Lock() if args.save_text else None
+    csv_file_lock = manager.Lock() # Lock 객체는 항상 생성
 
-
-    if args.save_text:
-        csv_output_file_path = os.path.join(args.output_dir, "ocr_labeled_text.csv")
-        try:
-            with open(csv_output_file_path, 'w', newline='', encoding='utf-8') as csvfile:
-                csv_writer = csv.writer(csvfile)
-                csv_writer.writerow(["Image Filename", "Label", "Extracted Text", "Confidence", "Bounding Box (str)"])
-            logger.info(f"CSV 파일 '{csv_output_file_path}'가 초기화되었습니다 (헤더 작성 완료).")
-        except IOError as e:
-            logger.error(f"CSV 파일 초기화 중 오류 ({csv_output_file_path}): {e}")
-            args.save_text = False 
-            logger.warning("CSV 파일 초기화 실패로 텍스트 저장 기능이 비활성화됩니다.")
+    try:
+        with open(csv_output_file_path, 'w', newline='', encoding='utf-8') as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerow(["Image Filename", "Label", "Extracted Text", "Confidence", "Bounding Box (str)"])
+        logger.info(f"CSV 파일 '{csv_output_file_path}'가 초기화되었습니다 (헤더 작성 완료).")
+    except IOError as e:
+        logger.error(f"CSV 파일 초기화 중 오류 ({csv_output_file_path}): {e}")
+        logger.error("CSV 파일 생성에 실패하여 스크립트를 종료합니다.")
+        exit(1) # CSV 파일 생성 실패 시 종료
 
 
     task_arguments_list = []
     for filename in image_filenames:
         current_image_path = os.path.join(args.input_dir, filename)
-        # process_single_image_task는 이제 Lock과 CSV 경로를 직접 받지 않음
-        # worker_initializer_func를 통해 설정된 전역 변수를 사용
         task_arguments_list.append((
             current_image_path, 
             filename, 
             ocr_engine_params, 
             args.output_dir,
             args.no_preprocess, 
-            args.save_text, 
+            # args.save_text, # 제거됨. CSV 저장은 항상 True로 간주
             args.show_image,
             font_path_for_tasks
-            # csv_lock, csv_output_file_path 제거됨
+            # csv_lock, csv_output_file_path 는 worker_initializer_func 를 통해 전달됨
         ))
     
     pool = None 
     try:
-        # worker_initializer_func에 Lock과 CSV 경로 전달
         pool = multiprocessing.Pool(
             processes=num_workers, 
             initializer=worker_initializer_func, 
-            initargs=(csv_file_lock, csv_output_file_path, log_level_env_name) # Lock, CSV 경로, 로그레벨 env 이름 전달
+            initargs=(csv_file_lock, csv_output_file_path, log_level_env_name) 
         )
 
         logger.info("병렬 이미지 처리 시작...")
@@ -461,7 +453,7 @@ def main():
         for result_status in tqdm(pool.imap_unordered(process_single_image_task, task_arguments_list), 
                                   total=len(task_arguments_list), desc="전체 이미지 처리 중"):
             if result_status: 
-                results_from_pool.append(result_status) # 작업자 반환값(상태 메시지) 수집
+                results_from_pool.append(result_status) 
                 logger.debug(f"작업 결과 수신: {result_status}")
             
         logger.info("모든 작업이 풀에 제출되었고 결과 반복이 완료되었습니다.")
@@ -477,6 +469,7 @@ def main():
             logger.info("Pool.join() 호출 완료. 모든 작업자 프로세스가 종료되었습니다.")
         
     logger.info(f"총 {len(image_filenames)}개의 이미지 파일 처리가 완료되었습니다.")
+    logger.info(f"추출된 텍스트는 {csv_output_file_path} 에 저장되었습니다.")
     logger.info("스크립트 실행 종료.")
 
 if __name__ == "__main__":
