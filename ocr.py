@@ -9,11 +9,9 @@ import platform # 운영체제 감지를 위해 platform 모듈 임포트
 from tqdm import tqdm # 진행률 표시를 위해 tqdm 임포트
 import logging # 로깅 모듈 임포트
 
-__version__ = "0.5.0" # 스크립트 버전 정보 (로깅 기능 추가)
+__version__ = "0.5.1" # 스크립트 버전 정보 (기본 입출력 디렉토리 변경)
 
 # --- 로거 설정 ---
-# 기본 로거 설정 (스크립트 최상단 또는 main 함수 시작 부분에서 설정 가능)
-# 여기서는 main 함수 내에서 로거를 가져오고 설정합니다.
 logger = logging.getLogger(__name__)
 
 def setup_logger(level=logging.INFO):
@@ -41,7 +39,6 @@ def preprocess_image_for_ocr(image_path):
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced_contrast_img = clahe.apply(gray_img)
         denoised_img = cv2.medianBlur(enhanced_contrast_img, 3)
-        # logger.debug(f"이미지 전처리 완료: {image_path}") # 디버그 레벨에서만 출력
         return denoised_img
     except cv2.error as e:
         logger.error(f"OpenCV 오류 발생 (이미지 전처리 중 {os.path.basename(image_path)}): {e}")
@@ -53,7 +50,6 @@ def preprocess_image_for_ocr(image_path):
 def extract_text_from_image(image_path_or_data, lang='korean', preprocess_flag=True, filename_for_log=""):
     """
     주어진 이미지 경로 또는 데이터에서 텍스트를 추출합니다.
-    preprocess_flag 인자명을 preprocess에서 변경하여 내장 함수와 혼동 방지
     """
     try:
         ocr_params = {'use_angle_cls': True, 'use_gpu': False, 'show_log': False}
@@ -72,7 +68,6 @@ def extract_text_from_image(image_path_or_data, lang='korean', preprocess_flag=T
 
         input_data = image_path_or_data
         if isinstance(image_path_or_data, str) and preprocess_flag:
-            # logger.debug(f"이미지 전처리를 시작합니다: {filename_for_log if filename_for_log else image_path_or_data}")
             processed_img = preprocess_image_for_ocr(image_path_or_data)
             if processed_img is None:
                 logger.warning(f"{filename_for_log}: 이미지 전처리에 실패하여 OCR을 진행할 수 없습니다.")
@@ -105,9 +100,6 @@ def extract_text_from_image(image_path_or_data, lang='korean', preprocess_flag=T
         logger.error(f"OCR 처리 중 오류 발생 ({filename_for_log}): {e}")
         return None
 
-# 폰트 메시지 중복 출력을 방지하기 위한 플래그 (함수 속성으로 관리)
-# 이 플래그는 get_os_specific_font_path 함수 내에서 사용됩니다.
-# 전역 변수 대신 함수 속성을 사용하여 상태를 관리합니다.
 def _initialize_font_message_flag():
     if not hasattr(get_os_specific_font_path, 'font_message_printed'):
         get_os_specific_font_path.font_message_printed = False
@@ -150,7 +142,7 @@ def get_os_specific_font_path():
         return None
 
 def display_ocr_result(original_image_path, extracted_data, output_dir, original_filename, 
-                       preprocessed_img=None, show_image_flag=False): # show_image -> show_image_flag
+                       preprocessed_img=None, show_image_flag=False):
     """
     OCR 결과를 이미지 위에 표시하고 저장합니다.
     """
@@ -194,12 +186,13 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
             get_os_specific_font_path.font_message_printed = True
 
         try:
-            if font_path and not get_os_specific_font_path.font_message_printed: # 메시지 한 번만 출력
-                 logger.info(f"텍스트 렌더링에 사용할 폰트: {font_path}")
-                 get_os_specific_font_path.font_message_printed = True
-            elif not font_path and not get_os_specific_font_path.font_message_printed:
-                 logger.warning("사용 가능한 폰트를 찾지 못했습니다. 폰트 없이 텍스트를 표시합니다 (PaddleOCR 기본값 사용).")
-                 get_os_specific_font_path.font_message_printed = True
+            # 첫 번째 이미지 처리 시에만 폰트 사용 관련 로그를 남기도록 플래그 활용
+            if get_os_specific_font_path.font_message_printed == True and not hasattr(display_ocr_result, 'font_usage_logged'):
+                if font_path:
+                    logger.info(f"텍스트 렌더링에 사용할 최종 폰트: {font_path}")
+                else:
+                    logger.warning("사용 가능한 폰트를 찾지 못했습니다. 폰트 없이 텍스트를 표시합니다 (PaddleOCR 기본값 사용).")
+                display_ocr_result.font_usage_logged = True # 로그 남겼음을 표시
             
             im_show = draw_ocr(image, boxes, txts, scores, font_path=font_path)
         except Exception as e:
@@ -212,7 +205,7 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
         output_image_path = os.path.join(output_dir, output_image_filename)
         
         im_show_pil.save(output_image_path)
-        logger.debug(f"OCR 결과가 표시된 이미지가 {output_image_path}에 저장되었습니다.") # 디버그 레벨
+        logger.debug(f"OCR 결과가 표시된 이미지가 {output_image_path}에 저장되었습니다.")
         
         if show_image_flag:
             im_show_pil.show()
@@ -223,11 +216,12 @@ def display_ocr_result(original_image_path, extracted_data, output_dir, original
         logger.error(f"OCR 결과 표시/저장 중 오류 발생 ({original_filename}): {e}")
 
 if __name__ == "__main__":
-    setup_logger() # 로거 설정 실행
+    setup_logger() 
+    display_ocr_result.font_usage_logged = False # 폰트 사용 로그 플래그 초기화
 
     parser = argparse.ArgumentParser(description="이미지 폴더에서 텍스트를 추출하는 OCR 스크립트입니다.")
-    parser.add_argument("input_dir", nargs='?', default=None, help="텍스트를 추출할 이미지가 포함된 폴더의 경로입니다. (생략 시 버전 정보만 표시)")
-    parser.add_argument("--output_dir", help="OCR 결과 이미지를 저장할 폴더 경로입니다. (기본값: 입력 폴더 내 'output_ocr_results')", default=None)
+    parser.add_argument("input_dir", nargs='?', default='input', help="텍스트를 추출할 이미지가 포함된 폴더의 경로입니다. (기본값: 'input')")
+    parser.add_argument("--output_dir", default='output', help="OCR 결과 이미지를 저장할 폴더 경로입니다. (기본값: 'output')")
     parser.add_argument("--lang", help="OCR에 사용할 언어입니다 (예: korean, en, korean+en). (기본값: korean)", default='korean')
     parser.add_argument("--show_image", action='store_true', help="처리된 각 이미지와 OCR 결과를 화면에 표시합니다.")
     parser.add_argument("--no_preprocess", action='store_true', help="이미지 전처리 단계를 건너뜁니다.")
@@ -237,26 +231,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.debug:
-        setup_logger(logging.DEBUG) # 디버그 모드 시 로깅 레벨 변경
+        setup_logger(logging.DEBUG) 
         logger.debug("디버그 모드가 활성화되었습니다.")
 
-    if args.input_dir is None:
-        if not any(arg.startswith('--version') or arg == '-v' for arg in os.sys.argv):
-             parser.print_help()
-        exit(0)
+    # --version 사용 시 argparse가 자동으로 종료하므로, 별도 input_dir None 체크 불필요.
+    # input_dir이 제공되지 않으면 default 'input'이 사용됨.
 
     input_dir_path = args.input_dir
     output_dir_path = args.output_dir
     selected_language = args.lang
-    display_images_flag = args.show_image # 변수명 변경
+    display_images_flag = args.show_image
     skip_preprocessing = args.no_preprocess
 
     if not os.path.isdir(input_dir_path):
-        logger.error(f"입력 디렉토리 '{input_dir_path}'를 찾을 수 없거나 디렉토리가 아닙니다.")
+        logger.error(f"입력 디렉토리 '{input_dir_path}'를 찾을 수 없거나 디렉토리가 아닙니다. 스크립트를 종료합니다.")
+        logger.info(f"팁: '{input_dir_path}' 디렉토리를 생성하거나 올바른 경로를 지정해주세요.")
         exit(1)
-
-    if output_dir_path is None:
-        output_dir_path = os.path.join(input_dir_path, "output_ocr_results")
 
     if not os.path.exists(output_dir_path):
         try:
@@ -285,9 +275,7 @@ if __name__ == "__main__":
     logger.info(f"결과 이미지 표시: {display_images_flag}")
     logger.info(f"총 {len(image_files_to_process)}개의 이미지 파일을 처리합니다.")
     
-    # 폰트 메시지 플래그 초기화 (여러 번 실행 시를 위함이지만, 스크립트가 한 번만 실행되므로 여기서는 큰 의미 없음)
-    get_os_specific_font_path.font_message_printed = False
-
+    get_os_specific_font_path.font_message_printed = False # 루프 시작 전 폰트 메시지 플래그 초기화
 
     for filename in tqdm(image_files_to_process, desc="OCR 처리 중", unit="개"):
         current_image_path = os.path.join(input_dir_path, filename)
@@ -302,18 +290,16 @@ if __name__ == "__main__":
                 ocr_input_data = processed_image_data 
             else:
                 logger.warning(f"{filename} 전처리에 실패. 원본 이미지로 OCR 시도.")
-        else:
-            logger.info(f"{filename} 전처리 단계를 건너뜁니다.")
+        # else: # --no_preprocess 사용 시 별도 로그는 생략 (위에서 이미 로깅됨)
+            # logger.info(f"{filename} 전처리 단계를 건너뜁니다.") 
 
         extracted_data = extract_text_from_image(ocr_input_data, 
                                                  lang=selected_language, 
-                                                 preprocess_flag=False, # 외부에서 전처리 또는 건너뜀
+                                                 preprocess_flag=False, 
                                                  filename_for_log=filename)
 
         if extracted_data:
             logger.debug(f"추출된 텍스트 항목 수 ({filename}): {len(extracted_data)}")
-            # for i, item in enumerate(extracted_data): # 너무 많은 로그를 유발할 수 있어 디버그 레벨에서만
-            #     logger.debug(f"  {i+1}. 텍스트: \"{item['text']}\", 신뢰도: {item['confidence']:.2f}")
             
             display_ocr_result(current_image_path, extracted_data, output_dir_path, filename,
                                preprocessed_img=processed_image_data if not skip_preprocessing else None, 
@@ -323,4 +309,3 @@ if __name__ == "__main__":
         
     logger.info(f"총 {len(image_files_to_process)}개의 이미지 파일 처리가 완료되었습니다.")
     logger.info("스크립트 실행 종료.")
-    # 최종 폰트 관련 안내는 display_ocr_result 내부에서 처리됨
