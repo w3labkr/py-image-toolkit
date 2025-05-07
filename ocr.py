@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore", category=UserWarning, message="No ccache found
 
 from paddleocr import PaddleOCR, draw_ocr 
 
-__version__ = "1.0.13" # 스크립트 버전 정보 (날짜 부분 조합 로직 재수정 및 디버깅 강화)
+__version__ = "1.0.14" # 스크립트 버전 정보 (날짜 부분 조합 로직 재수정 및 디버깅 강화)
 
 # --- 로거 설정 ---
 logger = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ def label_text_item_initial(extracted_item, image_width, image_height):
              if 1 <= month_day_val <= 31: # 월 또는 일 가능성
                  extracted_item['date_part_type'] = 'month_or_day' 
                  return "날짜_부분"
-        
+    
     # 4. 발급기관 직인 후보
     authority_suffix = ["청장", "시장", "군수", "구청장", "경찰서장", "지방경찰청장"]
     if any(text.endswith(suffix) for suffix in authority_suffix):
@@ -518,6 +518,76 @@ def refine_and_finalize_labels(labeled_items):
                         except ValueError:
                             logger.warning("조합된 날짜 부분 항목을 원본 리스트에서 찾을 수 없습니다.")
                             final_date_item = None
+
+            # 3.5단계: 주소 항목 조합
+            address_items = []
+            for item in labeled_items:
+                if item['label'] == '주소' and item not in [item for idx, item in enumerate(labeled_items) if idx in processed_indices]:
+                    address_items.append(item)
+            
+            # 주소 항목이 여러 개면 좌상단에서 우하단 순으로 정렬하여 조합
+            if len(address_items) > 1:
+                # Y축 기준으로 그룹화(같은 줄에 있는지 확인)
+                y_groups = {}
+                for addr_item in address_items:
+                    if addr_item['bounding_box']:
+                        y_center = get_box_center(addr_item['bounding_box'])[1]
+                        # 같은 높이(Y) 근처에 있는 항목들을 같은 그룹으로 취급
+                        group_key = int(y_center / 20) * 20  # 20픽셀 간격으로 그룹화
+                        if group_key not in y_groups:
+                            y_groups[group_key] = []
+                        y_groups[group_key].append(addr_item)
+                
+                # 각 그룹 내에서 X좌표로 정렬하고 Y좌표 그룹은 오름차순 정렬
+                sorted_groups = sorted(y_groups.keys())
+                combined_address_text = ""
+                
+                for group_key in sorted_groups:
+                    # 같은 행에서는 X좌표 기준 왼쪽에서 오른쪽으로 정렬
+                    sorted_row_items = sorted(y_groups[group_key], 
+                                            key=lambda item: get_box_left(item['bounding_box']) 
+                                                            if item['bounding_box'] else float('inf'))
+                    
+                    for item in sorted_row_items:
+                        combined_address_text += item['text'] + " "
+                        try:
+                            processed_indices.add(labeled_items.index(item))
+                        except ValueError:
+                            logger.warning(f"주소 항목을 원본 리스트에서 찾을 수 없습니다: {item['text']}")
+                
+                combined_address_text = combined_address_text.strip()
+                
+                if combined_address_text:
+                    # 모든 주소 바운딩 박스를 포함하는 하나의 바운딩 박스 생성
+                    all_coords = []
+                    for addr_item in address_items:
+                        if addr_item['bounding_box']:
+                            all_coords.extend(addr_item['bounding_box'])
+                    
+                    final_address_bounding_box = None
+                    if all_coords:
+                        min_x = min(coord[0] for coord in all_coords)
+                        min_y = min(coord[1] for coord in all_coords)
+                        max_x = max(coord[0] for coord in all_coords)
+                        max_y = max(coord[1] for coord in all_coords)
+                        
+                        final_address_bounding_box = [
+                            [min_x, min_y], 
+                            [max_x, min_y], 
+                            [max_x, max_y], 
+                            [min_x, max_y]
+                        ]
+                    
+                    # 결합된 주소 항목 생성
+                    final_address_item = {
+                        'text': combined_address_text,
+                        'label': '주소',
+                        'confidence': min(item['confidence'] for item in address_items),
+                        'bounding_box': final_address_bounding_box
+                    }
+                    
+                    logger.debug(f"주소 항목 조합: {combined_address_text}")
+                    final_labeled_items.append(final_address_item)
 
     # 4단계: 최종 결과 리스트 생성
     for i, item in enumerate(labeled_items):
