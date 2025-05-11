@@ -1,6 +1,6 @@
 # py-image-toolkit
 
-`py-image-toolkit` is a Python-based toolkit for image processing. It provides a command-line interface (CLI) through `image.py` for resizing images and performing automatic cropping based on face detection and composition rules. It's designed to be fast, efficient, and easy to use.
+`py-image-toolkit` is a Python-based toolkit for image processing. It provides a command-line interface (CLI) through individual scripts (`resize.py`, `crop.py`, and `ocr.py`) for resizing images, performing automatic cropping based on face detection and composition rules, and extracting text using Optical Character Recognition (OCR). It's designed to be fast, efficient, and easy to use.
 
 ---
 
@@ -8,20 +8,24 @@
 
 ```plaintext
 py-image-toolkit/
-├── modules/
-│   ├── resize.py      # Module for image resizing logic
-│   └── crop.py        # Module for face detection and auto-cropping logic
-├── models/
-│   └── face_detection_yunet_2023mar.onnx # YuNet model for face detection
-├── image.py           # Main CLI script for resize and crop commands
+├── models/            # Directory for storing models
+│   ├── face_detection_yunet_2023mar.onnx # YuNet model for face detection
+│   ├── ch_PP-OCRv3_det_infer/             # Example: PaddleOCR detection model
+│   ├── ko_PP-OCRv3_rec_infer/             # Example: PaddleOCR Korean recognition model
+│   └── ch_ppocr_mobile_v2.0_cls_infer/    # Example: PaddleOCR classification model
+├── resize.py          # CLI script for image resizing logic
+├── crop.py            # CLI script for face detection and auto-cropping logic
+├── ocr.py             # CLI script for Optical Character Recognition (OCR)
 ├── requirements.txt   # List of required libraries
 └── README.md          # Project documentation
 ```
 
-- `modules/resize.py`: Contains the core logic for image resizing, aspect ratio adjustments, and format conversion.
-- `modules/crop.py`: Contains the core logic for detecting faces and cropping images based on composition rules.
-- `models/face_detection_yunet_2023mar.onnx`: Pretrained YuNet face detection model, automatically downloaded if not present.
-- `image.py`: The main entry point for accessing `resize` and `crop` functionalities.
+- `resize.py`: CLI script containing the core logic for image resizing, aspect ratio adjustments, and format conversion.
+- `crop.py`: CLI script containing the core logic for detecting faces and cropping images based on composition rules.
+- `ocr.py`: CLI script providing OCR functionality to extract text from images and classify it using predefined labels.
+- `models/`: Directory for storing machine learning models.
+    - `face_detection_yunet_2023mar.onnx`: Pretrained YuNet face detection model, automatically downloaded if not present for the `crop.py` script.
+    - PaddleOCR models (e.g., `ch_PP-OCRv3_det_infer`, `ko_PP-OCRv3_rec_infer`): Models for text detection, recognition, and classification used by `ocr.py`. These models need to be downloaded manually or specified via path arguments if not in the default location.
 - `requirements.txt`: Lists Python packages required to run the project.
 
 ---
@@ -35,8 +39,10 @@ py-image-toolkit/
   - `opencv-python`
   - `Pillow`
   - `tqdm`
-  - `piexif` (for `resize` command if preserving EXIF in some cases)
+  - `piexif` (for `resize.py` script if preserving EXIF in some cases)
   - `numpy`
+  - `paddleocr` (for `ocr.py` script)
+  - `paddlepaddle` or `paddlepaddle-gpu` (for `ocr.py` script)
 
 ### Installation Guide
 
@@ -56,6 +62,8 @@ Install the required dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+
+To use the `ocr.py` script with GPU acceleration, ensure you install `paddlepaddle-gpu` instead of `paddlepaddle` and have the necessary CUDA drivers and toolkit installed.
 
 To deactivate and remove the virtual environment created with pyenv, use the following commands:
 
@@ -81,16 +89,16 @@ pyenv versions
 
 ## General CLI Options
 
-The main `image.py` script provides the following global options:
+Each script (`resize.py`, `crop.py`, `ocr.py`) is executed directly and has its own set of options. Common options related to verbosity include:
 
-- `--version`: Show program's version number and exit.
-- `-v, --verbose`: Enable verbose (DEBUG level) logging for detailed output across all commands. This is a global flag; individual commands like `crop` might also have their own verbose flags for more specific debug output.
+- `-v, --verbose`: `resize.py` and `crop.py` support this flag to enable detailed (DEBUG level) logging.
+- `--show_log`: `ocr.py` uses this flag to show PaddleOCR's internal logs.
 
 ---
 
 ## Image Resizing
 
-The `resize` command processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
+The `resize.py` script processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
 
 - Aspect Ratio Resizing: Maintains aspect ratio while resizing.
 - Fixed Size Resizing: Forces images to fit specific dimensions.
@@ -101,7 +109,7 @@ The `resize` command processes images from an input directory by resizing them w
 Syntax:
 
 ```bash
-python image.py resize <input_dir> [options]
+python resize.py <input_dir> [options]
 ```
 
 Key Options for `resize`:
@@ -128,22 +136,22 @@ Examples for `resize`:
 
 - Resize images in `./input` to a width of 1280px, maintaining aspect ratio:
   ```bash
-  python image.py resize ./input -w 1280
+  python resize.py ./input -w 1280
   ```
 - Resize images to fixed 720x600 dimensions and output as PNG:
   ```bash
-  python image.py resize ./input -f png -r fixed -w 720 -H 600
+  python resize.py ./input -f png -r fixed -w 720 -H 600
   ```
 - Convert images to WEBP format without resizing and strip EXIF data:
   ```bash
-  python image.py resize ./input -f webp -r none --strip-exif
+  python resize.py ./input -f webp -r none --strip-exif
   ```
 
 ---
 
 ## Face Detection & Auto-Cropping
 
-The `crop` command detects faces in images and automatically crops them based on face detection and composition rules.
+The `crop.py` script detects faces in images and automatically crops them based on face detection and composition rules.
 
 - DNN-based Face Detection: Uses OpenCV’s YuNet model for face detection.
 - Composition-Aware Cropping: Applies Rule of Thirds, Golden Ratio, or both.
@@ -154,7 +162,7 @@ The `crop` command detects faces in images and automatically crops them based on
 Syntax:
 
 ```bash
-python image.py crop <input_path> [options]
+python crop.py <input_path> [options]
 ```
 
 Key Options for `crop`:
@@ -177,22 +185,72 @@ Key Options for `crop`:
 - `--webp-quality`: Quality for WEBP output (1-100) (Default: `80`).
 - `--strip-exif`: Remove EXIF data from output images (Default: False, EXIF is preserved).
 - `--yunet-model-path`: Path to the YuNet ONNX model file. (Default: `models/face_detection_yunet_2023mar.onnx`, downloaded if missing).
-- `-v, --verbose`: Enable detailed (DEBUG level) logging *specifically for the crop operation* (Default: False).
+- `-v, --verbose`: Enable detailed (DEBUG level) logging for the crop operation (Default: False).
 
 Examples for `crop`:
 
 - Crop a single image `./input/image.jpg` to 16:9 ratio using rule of thirds:
   ```bash
-  python image.py crop ./input/image.jpg -o ./output -r 16:9 --rule thirds
+  python crop.py ./input/image.jpg -o ./output -r 16:9 --rule thirds
   ```
 - Crop all images in `./input`, selecting main subject by proximity to center, using bounding box reference, 1:1 ratio, and both rules:
   ```bash
-  python image.py crop ./input -o ./output -r 1:1 -m center --ref box --rule both
+  python crop.py ./input -o ./output -r 1:1 -m center --ref box --rule both
   ```
 - Perform a dry run for cropping images in `./input`:
   ```bash
-  python image.py crop ./input -o ./output --dry-run
+  python crop.py ./input -o ./output --dry-run
   ```
+
+---
+
+## OCR (Optical Character Recognition)
+
+The `ocr.py` script extracts text from images using PaddleOCR and applies heuristics to label common Korean document fields.
+
+- Text Extraction: Utilizes PaddleOCR for robust text detection and recognition in Korean and other languages.
+- Heuristic Labeling: Identifies and categorizes extracted text into predefined labels such as name, address, document title, RRN (Resident Registration Number), issue date, and issuer.
+- Flexible Input: Processes single image files or all supported image files within a directory.
+- Customizable Models: Allows specifying paths to PaddleOCR detection, recognition, and classification models.
+
+Syntax:
+
+```bash
+python ocr.py <input_path> [options]
+```
+
+Key Options for `ocr`:
+
+- `input_path`: Path to the image file or directory to process.
+- `--lang`: Language for OCR (Default: `korean`).
+- `--rec_model_dir`: Path to PaddleOCR recognition model directory (Default: `./models/ko_PP-OCRv3_rec_infer`).
+- `--det_model_dir`: Path to PaddleOCR detection model directory (Default: `./models/ch_PP-OCRv3_det_infer`).
+- `--cls_model_dir`: Path to PaddleOCR classification model directory (Default: `./models/ch_ppocr_mobile_v2.0_cls_infer`).
+- `--use_gpu`: Use GPU for OCR (Default: False). Requires `paddlepaddle-gpu` and a compatible CUDA environment.
+- `--show_log`: Show PaddleOCR internal logs (Default: False).
+
+Examples for `ocr`:
+
+- Extract and label text from a single image `./input/document.png`:
+  ```bash
+  python ocr.py ./input/document.png
+  ```
+- Process all images in `./input_docs` directory using GPU and a custom Korean recognition model:
+  ```bash
+  python ocr.py ./input_docs --use_gpu --rec_model_dir /path/to/my_korean_rec_model
+  ```
+
+The output will display extracted fields like:
+```
+--- Extraction Results for 'sample_id_card.jpg' ---
+"문서 제목": 주민등록증
+"이름": 홍길동
+"주소": 서울특별시 종로구 세종대로 123 (세종로)
+"주민등록번호": 123456-1234567
+"발급일": 2023.05.10
+"발급기관": 서울특별시 종로구청장
+```
+*(Note: The accuracy and completeness of labeled fields depend on image quality, the OCR model's performance, and the heuristics applied.)*
 
 ---
 
@@ -209,18 +267,23 @@ pip install -r requirements.txt
 
 ### Missing Model File
 
-The `crop` command (via `image.py crop`) will automatically attempt to download the YuNet model if it is not found in the `models/` directory. Ensure you have an active internet connection during the first run or if the model is missing.
+- **YuNet Model (for `crop.py` script)**: The `crop.py` script will automatically attempt to download the YuNet model if it is not found in the `models/` directory. Ensure you have an active internet connection during the first run or if the model is missing.
+- **PaddleOCR Models (for `ocr.py` script)**: The `ocr.py` script requires PaddleOCR models.
+    - Ensure you have downloaded the necessary detection, recognition (e.g., for Korean), and classification models.
+    - By default, the script looks for models in subdirectories under `./models/` (e.g., `./models/ko_PP-OCRv3_rec_infer`). You may need to create these directories and place the model files there.
+    - You can specify custom model paths using options like `--rec_model_dir`, `--det_model_dir`, and `--cls_model_dir`.
+    - If using GPU (`--use_gpu`), ensure `paddlepaddle-gpu` is installed and your CUDA environment is correctly configured.
 
 ### Image Not Processed
 
 - Verify that the input path is correct and contains valid image files with supported extensions.
-- Use the global `--verbose` flag with `image.py` or specific verbose flags for commands (like `-v` for `image.py crop`) to enable detailed logs for debugging:
-  ```bash
-  python image.py resize ./input --verbose
-  python image.py crop ./input -v
-  ```
-- If `image.py resize` command fails due to invalid arguments or critical processing errors, it will exit with a non-zero status code. Check terminal output for specific error messages.
-- If `image.py crop` command encounters critical setup issues (e.g., model download failure, output directory problems, invalid input path) or unhandled processing errors, it will exit with a non-zero status code. `CropSetupError` indicates a problem that prevented the operation from starting. Check terminal output and logs for details.
+- Use verbose flags for each script to enable detailed logs for debugging:
+  - For `resize.py`: `python resize.py ./input --verbose`
+  - For `crop.py`: `python crop.py ./input -v` (or `--verbose`)
+  - For `ocr.py`: `python ocr.py ./input_image.png --show_log` (for PaddleOCR logs)
+- If `python resize.py` command fails due to invalid arguments or critical processing errors, it will exit with a non-zero status code. Check terminal output for specific error messages.
+- If `python crop.py` command encounters critical setup issues (e.g., model download failure, output directory problems, invalid input path) or unhandled processing errors, it will exit with a non-zero status code. `CropSetupError` indicates a problem that prevented the operation from starting. Check terminal output and logs for details.
+- If `python ocr.py` command fails, check for PaddleOCR model availability, correct paths, and library installation. Error messages in the terminal or logs should provide more details.
 
 ---
 

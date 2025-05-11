@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import os
 import logging
-from typing import Dict, Any, Optional, Tuple, List
+from typing import Dict, Any, Optional, Tuple, List, NoReturn
 import multiprocessing
+import argparse
+import sys
 
 from PIL import Image, UnidentifiedImageError
 from tqdm import tqdm
@@ -358,14 +360,141 @@ def batch_process_images(config: dict) -> Tuple[int, int, int, list[Tuple[str, s
 
     return processed_count, error_count, skipped_overwrite_count, error_files_details, all_skipped_scan_items_reasons
 
-def execute_resize_operation(config: dict) -> int:
+def execute_resize_operation(config: dict) -> NoReturn:
     logger.info("===== Image Resizing Script Logic Started =====")
 
-    processed_count, error_count, skipped_overwrite_count, error_files_details, all_skipped_scan_items_reasons = batch_process_images(config)
+    try:
+        processed_count, error_count, skipped_overwrite_count, error_files_details, all_skipped_scan_items_reasons = batch_process_images(config)
         
-    if error_count > 0:
-        logger.warning(f"Image resizing finished with {error_count} errors.")
-    else:
-        logger.info("Image resizing finished successfully.")
-    logger.info("===== Image Resizing Script Logic Finished =====")
-    return error_count
+        summary_messages = []
+        summary_messages.append(f"Total files processed: {processed_count}")
+        if skipped_overwrite_count > 0:
+            summary_messages.append(f"Files skipped (overwrite disabled): {skipped_overwrite_count}")
+        if all_skipped_scan_items_reasons:
+            summary_messages.append(f"Files/items skipped during scan: {len(all_skipped_scan_items_reasons)}")
+        if error_count > 0:
+            summary_messages.append(f"Errors encountered: {error_count}")
+        
+        final_summary = " | ".join(summary_messages)
+        logger.info(f"Resize operation summary: {final_summary}")
+
+        if error_count > 0:
+            logger.warning(f"Image resizing finished with {error_count} errors.")
+        else:
+            logger.info("Image resizing finished successfully.")
+        logger.info("===== Image Resizing Script Logic Finished =====")
+        sys.exit(1 if error_count > 0 else 0)
+
+    except Exception as e:
+        verbose_logging = config.get('verbose_global', False)
+        logger.critical(f"CRITICAL: An unhandled critical exception occurred in resize operation: {e}", exc_info=verbose_logging)
+        print(f"\n(!) Critical Error in resize operation: {e}. Check logs for details.", file=sys.stderr)
+        sys.exit(2)
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Py Image Toolkit CLI - Image Resizer",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        dest="verbose_global",
+        help="Enable verbose (DEBUG level) logging for detailed output across all commands."
+    )
+
+    parser.add_argument("input_dir", nargs='?', default='input',
+                               help="Path to the source image folder or a single image file (default: 'input' in current directory).")
+
+    parser.add_argument("-o", "--output-dir", dest='output_dir', default='output',
+                               help="Path to save processed images (default: 'output' in current directory).")
+
+    parser.add_argument("-f", "--output-format",
+                               default='original',
+                               choices=SUPPORTED_OUTPUT_FORMATS.keys(),
+                               help="Target output file format (default: original):\n" +
+                                    "\n".join([f"  {k}: {v}" for k, v in SUPPORTED_OUTPUT_FORMATS.items()]))
+
+    parser.add_argument("-r", "--ratio",
+                             choices=['aspect_ratio', 'fixed', 'none'],
+                             default='aspect_ratio',
+                             help="Resize ratio behavior (default: aspect_ratio):\n"
+                                  "  aspect_ratio: Maintain aspect ratio to fit target Width/Height.\n"
+                                  "  fixed: Force resize to target Width x Height (may distort).\n"
+                                  "  none: No resizing (only format conversion/EXIF handling).")
+
+    parser.add_argument("-w", "--width", type=int, default=0,
+                              help="Target width in pixels for resizing (used if --ratio is not 'none').")
+    parser.add_argument("-H", "--height", type=int, default=0,
+                              help="Target height in pixels for resizing (used if --ratio is not 'none').")
+    parser.add_argument("--filter",
+                              default='lanczos',
+                              choices=FILTER_NAMES.keys(),
+                              help="Resampling filter for resizing (default: lanczos):\n" +
+                                   "\n".join([f"  {k}: {v}" for k, v in FILTER_NAMES.items()]))
+
+    parser.add_argument("-q", "--jpeg-quality", type=int, dest='jpg_quality',
+                                default=95,
+                                help="Quality for JPG output (1-100, higher is better). Default: 95")
+    parser.add_argument("--webp-quality", type=int, dest='webp_quality',
+                                default=80,
+                                help="Quality for WEBP output (1-100, higher is better). Default: 80 (for lossy WEBP).")
+    parser.add_argument("--webp-lossless", action="store_true",
+                                help="Use lossless compression for WEBP output. Ignored if output format is not WEBP.")
+    parser.add_argument("--strip-exif", action="store_true",
+                                help="Remove all EXIF metadata from images.")
+
+    parser.add_argument("--overwrite", dest='overwrite', action='store_true', default=False,
+                                 help="Overwrite existing output files. If not specified, existing files will be skipped.")
+
+    parser.add_argument("--include-extensions", nargs='+', metavar='EXT',
+                                help="Process only files with these extensions (e.g., jpg png).\n"
+                                     "Replaces the default list. Provide without dots (e.g., 'jpg').\n"
+                                     "Cannot be used with --exclude-extensions.")
+    parser.add_argument("--exclude-extensions", nargs='+', metavar='EXT',
+                                help="Exclude files with these extensions (e.g., gif tiff).\n"
+                                     "Applied AFTER default/include list. Provide without dots.\n"
+                                     "Cannot be used with --include-extensions.")
+
+    try:
+        args = parser.parse_args()
+
+        if args.verbose_global:
+            logger.setLevel(logging.DEBUG)
+            log_handler.setLevel(logging.DEBUG)
+            logger.debug("Verbose logging enabled.")
+
+        config = {k: v for k, v in vars(args).items() if k != 'parser_ref'}
+
+        config['absolute_input_dir'] = os.path.abspath(args.input_dir)
+        config['absolute_output_dir'] = os.path.abspath(args.output_dir)
+
+        config['resize_options'] = {
+            'mode': args.ratio,
+            'width': args.width,
+            'height': args.height,
+            'filter_str': args.filter,
+            'filter_obj': _PIL_RESAMPLE_FILTERS[args.filter]
+        }
+
+        config['output_format_options'] = {
+            'format_str': args.output_format
+        }
+        if args.output_format == 'jpg':
+            config['output_format_options']['quality'] = args.jpg_quality
+        elif args.output_format == 'webp':
+            config['output_format_options'].update({
+                'quality': args.webp_quality,
+                'lossless': args.webp_lossless
+            })
+
+        execute_resize_operation(config)
+            
+    except SystemExit as e:
+        sys.exit(e.code if e.code is not None else 1)
+    except Exception as e:
+        print(f"(!) An unexpected error occurred: {e}", file=sys.stderr)
+        sys.exit(2)
+
+if __name__ == "__main__":
+    main()
