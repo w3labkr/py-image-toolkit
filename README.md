@@ -1,6 +1,6 @@
 # py-image-toolkit
 
-`py-image-toolkit` is a Python-based toolkit for image processing. It provides tools for resizing images and performing automatic cropping based on face detection and composition rules. With a simple command-line interface (CLI), it's designed to be fast, efficient, and easy to use.
+`py-image-toolkit` is a Python-based toolkit for image processing. It provides a command-line interface (CLI) through `image.py` for resizing images and performing automatic cropping based on face detection and composition rules. It's designed to be fast, efficient, and easy to use.
 
 ---
 
@@ -8,20 +8,21 @@
 
 ```plaintext
 py-image-toolkit/
-├── resizer.py         # Script for image resizing
-├── cropper.py         # Script for face detection and auto-cropping
-├── ocr.py             # Script for OCR text extraction
-├── README.md          # Project documentation
+├── modules/
+│   ├── resize.py      # Module for image resizing logic
+│   └── crop.py        # Module for face detection and auto-cropping logic
+├── models/
+│   └── face_detection_yunet_2023mar.onnx # YuNet model for face detection
+├── image.py           # Main CLI script for resize and crop commands
 ├── requirements.txt   # List of required libraries
-└── models/
-    └── yunet.onnx     # YuNet model for face detection (used by OpenCV)
+└── README.md          # Project documentation
 ```
 
-- `resizer.py`: Handles resizing, aspect ratio adjustments, and format conversion
-- `cropper.py`: Detects faces and crops images based on composition rules (e.g., Rule of Thirds, Golden Ratio)
-- `ocr.py`: Extracts text from images using OCR with preprocessing and labeling features
-- `requirements.txt`: Lists Python packages required to run the project
-- `models/yunet.onnx`: Pretrained YuNet face detection model
+- `modules/resize.py`: Contains the core logic for image resizing, aspect ratio adjustments, and format conversion.
+- `modules/crop.py`: Contains the core logic for detecting faces and cropping images based on composition rules.
+- `models/face_detection_yunet_2023mar.onnx`: Pretrained YuNet face detection model, automatically downloaded if not present.
+- `image.py`: The main entry point for accessing `resize` and `crop` functionalities.
+- `requirements.txt`: Lists Python packages required to run the project.
 
 ---
 
@@ -30,195 +31,167 @@ py-image-toolkit/
 ### Requirements
 
 - Python 3.8 or higher
-- Required libraries:
+- Required libraries (see `requirements.txt`):
   - `opencv-python`
-  - `opencv-contrib-python`
-  - `numpy`
   - `Pillow`
   - `tqdm`
-  - `piexif`
-  - `paddleocr`
+  - `piexif` (for `resize` command if preserving EXIF in some cases)
+  - `numpy`
 
-### Setup Instructions
+### Installation Guide
 
-1. Clone the repository and set up a virtual environment:
+Clone the repository and set up a virtual environment:
 
-   ```bash
-   git clone https://github.com/w3labkr/py-image-toolkit.git
-   cd py-image-toolkit
-   pyenv install 3.12.9
-   pyenv virtualenv 3.12.9 py-image-toolkit-3.12.9
-   pyenv local py-image-toolkit-3.12.9
-   ```
+```bash
+git clone https://github.com/w3labkr/py-image-toolkit.git
+cd py-image-toolkit
+# Example using pyenv (adjust to your Python version management)
+# pyenv install 3.12.9
+# pyenv virtualenv 3.12.9 py-image-toolkit-3.12.9
+# pyenv local py-image-toolkit-3.12.9
+```
 
-2. Install the required dependencies:
+Install the required dependencies:
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+pip install -r requirements.txt
+```
+
+To deactivate and remove the virtual environment created with pyenv, use the following commands:
+
+```bash
+# Deactivate the current pyenv virtual environment
+pyenv deactivate
+
+# Remove the local virtual environment setting for the project directory
+pyenv local --unset
+
+# Delete the virtual environment
+# Replace py-image-toolkit-3.12.9 with your virtual environment name if different
+pyenv virtualenv-delete py-image-toolkit-3.12.9
+
+# Optional: Uninstall the Python version if it's no longer needed by other projects
+# pyenv uninstall 3.12.9 # Be cautious with this command
+
+# Verify the changes
+pyenv versions
+```
+
+---
+
+## General CLI Options
+
+The main `image.py` script provides the following global options:
+
+- `--version`: Show program's version number and exit.
+- `-v, --verbose`: Enable verbose (DEBUG level) logging for detailed output across all commands. This is a global flag; individual commands like `crop` might also have their own verbose flags for more specific debug output.
 
 ---
 
 ## Image Resizing
 
-The `resizer.py` script (v3.38) processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
+The `resize` command processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
 
-- Aspect Ratio Resizing: Maintains aspect ratio while resizing
-- Fixed Size Resizing: Forces images to fit specific dimensions
-- Format Conversion: Supports PNG, JPG, WEBP, and more
-- EXIF Metadata Preservation: Keeps original metadata intact
-- Recursive Processing: Processes directories and subdirectories
+- Aspect Ratio Resizing: Maintains aspect ratio while resizing.
+- Fixed Size Resizing: Forces images to fit specific dimensions.
+- Format Conversion: Supports PNG, JPG, WEBP, and keeping the original format.
+- EXIF Metadata Preservation: Keeps original metadata intact by default.
+- Recursive Processing: Processes directories and subdirectories.
 
 Syntax:
 
 ```bash
-python resizer.py <input_path> [options]
+python image.py resize <input_dir> [options]
 ```
 
-Key Options:
+Key Options for `resize`:
 
-- `-f`, `--output-format`: Target output file format (`original`, `png`, `jpg`, `webp`). (Default: `original`)
-- `-r`, `--ratio`: Resize ratio behavior. (Default: `aspect_ratio`)
-  - `aspect_ratio`: Maintain aspect ratio to fit the target size. Requires at least one of `--width` or `--height`.
-  - `fixed`: Force resize to exact dimensions (may distort the image). Both `--width` and `--height` must be specified.
-  - `none`: No resizing; only format conversion and EXIF handling will be applied.
-- `-w`, `--width`: Target width in pixels.
-- `-H`, `--height`: Target height in pixels.
-- `--filter`: Resampling filter for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). (Default: `lanczos`)
-- `-o`, `--output-dir`: Output directory for processed images. (Default: `output`)
-- `--jpeg-quality`: Quality for JPG output (1-100, default: `95`).
-- `--webp-quality`: Quality for WEBP output (1-100, default: `80` for lossy WEBP).
-- `--strip-exif`: Remove all EXIF metadata from images. (Default: EXIF is preserved unless this flag is used).
-- `--overwrite`: Overwrite existing output files. By default, existing files are skipped.
-- `--include-extensions`: Process only files with these extensions (e.g., `jpg png`).
-- `--exclude-extensions`: Exclude files with these extensions from processing (e.g., `gif tiff`).
-- `--webp-lossless`: Use lossless compression for WEBP output (only applicable when the output format is WEBP).
-- `-v`, `--verbose`: Enable detailed (DEBUG level) logging.
-- `--version`: Show program's version number and exit.
+- `input_dir`: Path to the source image folder or a single image file (Default: `input`).
+- `-o, --output-dir`: Output directory for processed images (Default: `output`).
+- `-f, --output-format`: Target output file format (`original`, `png`, `jpg`, `webp`). (Default: `original`).
+- `-r, --ratio`: Resize ratio behavior (`aspect_ratio`, `fixed`, `none`). (Default: `aspect_ratio`).
+  - `aspect_ratio`: Maintain aspect ratio to fit the target size. Requires at least one of `--width` or `--height` to be positive.
+  - `fixed`: Force resize to exact dimensions (may distort). Both `--width` and `--height` must be positive.
+  - `none`: No resizing; only format conversion and EXIF handling will be applied. If `width` or `height` are specified with `none`, a warning will be shown as they are ignored.
+- `-w, --width`: Target width in pixels for resizing (Default: `0`).
+- `-H, --height`: Target height in pixels for resizing (Default: `0`).
+- `--filter`: Resampling filter for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). (Default: `lanczos`).
+- `-q, --jpeg-quality`: Quality for JPG output (1-100). (Default: `95`). A warning is shown if used when output format is not JPG.
+- `--webp-quality`: Quality for WEBP output (1-100). (Default: `80` for lossy). A warning is shown if used when output format is not WEBP.
+- `--webp-lossless`: Use lossless compression for WEBP output. A warning is shown if used when output format is not WEBP.
+- `--strip-exif`: Remove all EXIF metadata from images.
+- `--overwrite`: Overwrite existing output files. If not specified, existing files will be skipped.
+- `--include-extensions`: Process only files with these extensions (e.g., `jpg png`). Replaces default list. Cannot be used with `--exclude-extensions`.
+- `--exclude-extensions`: Exclude files with these extensions from processing (e.g., `gif tiff`). Applied after default/include list. Cannot be used with `--include-extensions`.
 
-Examples
+Examples for `resize`:
 
-- Resize while maintaining aspect ratio:
-
+- Resize images in `./input` to a width of 1280px, maintaining aspect ratio:
   ```bash
-  python resizer.py ./input -w 1280
+  python image.py resize ./input -w 1280
   ```
-
-- Resize to fixed dimensions:
-
+- Resize images to fixed 720x600 dimensions and output as PNG:
   ```bash
-  python resizer.py ./input -f png -r fixed -w 720 -H 600
+  python image.py resize ./input -f png -r fixed -w 720 -H 600
   ```
-
-- Convert format without resizing and strip EXIF data:
-
+- Convert images to WEBP format without resizing and strip EXIF data:
   ```bash
-  python resizer.py ./input -f webp -r none --strip-exif
+  python image.py resize ./input -f webp -r none --strip-exif
   ```
 
 ---
 
 ## Face Detection & Auto-Cropping
 
-The `cropper.py` script (v1.8.0) detects faces in images and automatically crops them based on composition rules.
+The `crop` command detects faces in images and automatically crops them based on face detection and composition rules.
 
-- DNN-based Face Detection: Uses OpenCV’s YuNet for face detection
-- Composition-Aware Cropping: Applies Rule of Thirds, Golden Ratio, or both
-- Main Subject Selection: Selects either the largest face or the one closest to the center
-- Aspect Ratio Cropping: Supports standard ratios like 16:9, 1:1, etc.
-- Parallel Processing: Speeds up processing using multiple cores
+- DNN-based Face Detection: Uses OpenCV’s YuNet model for face detection.
+- Composition-Aware Cropping: Applies Rule of Thirds, Golden Ratio, or both.
+- Main Subject Selection: Selects either the largest face or the one closest to the image center.
+- Aspect Ratio Cropping: Supports standard ratios like 16:9, 1:1, or custom.
+- Parallel Processing: Speeds up batch processing using multiple CPU cores for directory input.
 
 Syntax:
 
 ```bash
-python cropper.py <input_path> [options]
+python image.py crop <input_path> [options]
 ```
 
-Key Options:
+Key Options for `crop`:
 
-- `--config`: Path to a JSON configuration file to load options from.
-- `-o`, `--output_dir`: Output directory (Default: `output`).
+- `input_path`: Path to the image file or directory to process (Default: `input`).
+- `-o, --output_dir`: Directory to save results (Default: `output`).
+- `--overwrite`: Overwrite existing output files (Default: False, files are skipped).
+- `--dry-run`: Simulate processing without saving files (Default: False).
+- `-m, --method`: Method to select main subject (`largest`, `center`) (Default: `largest`).
+- `--ref, --reference`: Reference point for composition (`eye` center, `box` center of the face) (Default: `box`).
+- `-c, --confidence`: Minimum face detection confidence (0.0-1.0) (Default: `0.6`).
+- `-n, --nms`: Face detection Non-Maximum Suppression (NMS) threshold (0.0-1.0) (Default: `0.3`).
+- `--min-face-width`: Minimum detected face width in pixels (Default: `30`).
+- `--min-face-height`: Minimum detected face height in pixels (Default: `30`).
+- `-r, --ratio`: Target crop aspect ratio (e.g., `16:9`, `1.0`, `None` for original) (Default: `None`). Use 'None' (case-insensitive string) or omit for original aspect ratio.
+- `--rule`: Composition rule(s) to apply (`thirds`, `golden`, `both`) (Default: `both`).
+- `-p, --padding-percent`: Padding percentage around crop area (%) (Default: `5.0`).
 - `--output-format`: Output image format (e.g., `jpg`, `png`, `webp`). (Default: original format is kept).
 - `-q, --jpeg-quality`: JPEG quality for JPG output (1-100) (Default: `95`).
 - `--webp-quality`: Quality for WEBP output (1-100) (Default: `80`).
-- `--overwrite`: Overwrite existing output files. (Default: files are skipped if they exist).
-- `--strip-exif`: Remove all EXIF metadata from output images. (Default: EXIF is preserved. Use this flag to strip).
-- `-m`, `--method`: Main subject selection method (`largest` face area, or face `center` closest to image center) (Default: `largest`).
-- `--ref`, `--reference`: Reference point on the subject for composition (`eye` center, `box` center of the face) (Default: `box`).
-- `-r`, `--ratio`: Desired crop aspect ratio (e.g., `16:9`, `1.0`). (Default: original image ratio).
-- `--rule`: Composition rule(s) to apply (`thirds`, `golden`, or `both`) (Default: `both`).
-- `-p`, `--padding-percent`: Percentage of padding to add around the main subject crop area (Default: `5.0`).
-- `-c`, `--confidence`: Minimum confidence score for face detection (0.0-1.0) (Default: `0.6`).
-- `-n`, `--nms`: Non-maximum suppression (NMS) threshold for face detection (0.0-1.0) (Default: `0.3`).
-- `--min-face-width`: Minimum detected face width in pixels (Default: `30`).
-- `--min-face-height`: Minimum detected face height in pixels (Default: `30`).
-- `--dry-run`: Perform a trial run, showing intended actions without writing output files.
-- `-v, --verbose`: Enable verbose logging for detailed process information.
-- `--version`: Show program's version number and exit.
+- `--strip-exif`: Remove EXIF data from output images (Default: False, EXIF is preserved).
+- `--yunet-model-path`: Path to the YuNet ONNX model file. (Default: `models/face_detection_yunet_2023mar.onnx`, downloaded if missing).
+- `-v, --verbose`: Enable detailed (DEBUG level) logging *specifically for the crop operation* (Default: False).
 
-Examples
+Examples for `crop`:
 
-- Crop a single image:
-
+- Crop a single image `./input/image.jpg` to 16:9 ratio using rule of thirds:
   ```bash
-  python cropper.py ./input/image.jpg -o ./output -r 16:9 --rule thirds
+  python image.py crop ./input/image.jpg -o ./output -r 16:9 --rule thirds
   ```
-
-- Crop all images in a folder, selecting the main subject based on center proximity and using bounding box as a reference:
-
+- Crop all images in `./input`, selecting main subject by proximity to center, using bounding box reference, 1:1 ratio, and both rules:
   ```bash
-  python cropper.py ./input -o ./output -r 1:1 -m center --ref box --rule both
+  python image.py crop ./input -o ./output -r 1:1 -m center --ref box --rule both
   ```
-
-- Perform a dry run without writing output files:
-
+- Perform a dry run for cropping images in `./input`:
   ```bash
-  python cropper.py ./input -o ./output --dry-run
-  ```
-
----
-
-## OCR Text Extraction
-
-The ocr.py script (v1.2.0) uses PaddleOCR to extract and label text from images, especially Korean ID fields. It supports preprocessing and parallel processing, and outputs results in detailed and summary CSVs, plus optional annotated images.
-
-- **Text Recognition**: Leverages PaddleOCR for multilingual text extraction.
-- **Image Preprocessing**: Optional steps to enhance image quality for OCR.
-- **Automatic Labeling**: Heuristic-based labeling for common ID document fields.
-- **Parallel Processing**: Speeds up batch processing using multiple CPU cores.
-- **CSV Output**: Generates both detailed and summary reports of extracted text.
-- **Visualization**: Overlays extracted text and labels on output images.
-
-Syntax:
-
-```bash
-python ocr.py <input_dir> [options]
-```
-
-Key Options:
-
-- `input_dir`: Path to the folder containing images for text extraction. (Default: `input`)
-- `--output_dir`: Path to the folder where OCR result images and CSV files will be saved. (Default: `output`)
-- `--lang`: Language to use for OCR (e.g., `korean`, `en`, `ch_sim`). (Default: `korean`)
-- `--show_image`: Display each processed image with OCR results on screen.
-- `--no_preprocess`: Skip the image preprocessing step.
-- `--use_gpu`: Attempt to use GPU for OCR processing if available (requires NVIDIA GPU and CUDA).
-- `--num_workers`: Number of worker processes for parallel processing. (Default: Number of CPU cores)
-- `--debug`: Enable debug level logging for more detailed output.
-- `--version`: Show script's version number and exit.
-
-Examples
-
-- Extract text from Korean ID cards in `./input` and save results to `./output`:
-
-  ```bash
-  python ocr.py ./input --output_dir ./output --lang korean
-  ```
-
-- Process images in `./input` using GPU, 4 worker processes, and skip preprocessing:
-
-  ```bash
-  python ocr.py ./input --use_gpu --num_workers 4 --no_preprocess
+  python image.py crop ./input -o ./output --dry-run
   ```
 
 ---
@@ -230,28 +203,24 @@ If you encounter issues while using the toolkit, refer to the following common p
 ### Missing Libraries
 
 Ensure all dependencies are installed:
-
 ```bash
 pip install -r requirements.txt
 ```
 
-For PaddleOCR-specific dependencies:
-
-```bash
-pip install paddleocr
-```
-
 ### Missing Model File
 
-The `cropper.py` script will automatically download the YuNet model if it is not found in the `models/` directory. Ensure you have an active internet connection.
+The `crop` command (via `image.py crop`) will automatically attempt to download the YuNet model if it is not found in the `models/` directory. Ensure you have an active internet connection during the first run or if the model is missing.
 
 ### Image Not Processed
 
-- Verify that the input path is correct and contains valid image files.
-- Use the `--verbose` flag to enable detailed logs for debugging:
+- Verify that the input path is correct and contains valid image files with supported extensions.
+- Use the global `--verbose` flag with `image.py` or specific verbose flags for commands (like `-v` for `image.py crop`) to enable detailed logs for debugging:
   ```bash
-  python resizer.py ./input --verbose
+  python image.py resize ./input --verbose
+  python image.py crop ./input -v
   ```
+- If `image.py resize` command fails due to invalid arguments or critical processing errors, it will exit with a non-zero status code. Check terminal output for specific error messages.
+- If `image.py crop` command encounters critical setup issues (e.g., model download failure, output directory problems, invalid input path) or unhandled processing errors, it will exit with a non-zero status code. `CropSetupError` indicates a problem that prevented the operation from starting. Check terminal output and logs for details.
 
 ---
 

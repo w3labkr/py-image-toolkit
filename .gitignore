@@ -262,3 +262,6 @@ resized/
 
 # Yunet files
 *.onnx
+
+# Ignore all files in the models folder
+models/
