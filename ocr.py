@@ -4,21 +4,9 @@ import sys
 import re
 from PIL import Image
 import numpy as np
-import logging
 from paddleocr import PaddleOCR
 import argparse
-import multiprocessing
 from tqdm import tqdm
-
-log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(processName)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-
-log_handler = logging.StreamHandler()
-log_handler.setFormatter(log_formatter)
-
-logger = logging.getLogger(__name__)
-if not logger.hasHandlers():
-    logger.addHandler(log_handler)
-    logger.setLevel(logging.WARNING)
 
 LABELS = {
     "O": ["기타"], # Other: 특별한 의미가 없는 기타 텍스트 또는 배경 요소
@@ -59,10 +47,13 @@ def extract_text_items_with_paddleocr(image_path_arg, paddleocr_args):
                     extracted_items.append({'text': text_content, 'confidence': confidence, 'box': box, 'label': 'O'})
         return extracted_items
     except ImportError as ie:
-        logger.error(f"Library related error: {ie}. Please ensure paddleocr and paddlepaddle are installed correctly.")
+        print(f"Library-related error: {ie}. Please check if paddleocr and paddlepaddle are properly installed.")
         return []
     except Exception as e:
-        logger.error(f"Unexpected error during PaddleOCR processing for '{image_path_arg}' (extract_text_items_with_paddleocr): {e}", exc_info=paddleocr_args.show_log)
+        print(f"Unexpected error occurred while processing '{image_path_arg}': {e}")
+        if paddleocr_args.show_log:
+            import traceback
+            traceback.print_exc()
         return []
 
 def apply_labeling_heuristics(items):
@@ -287,13 +278,9 @@ def process_image_file(image_file_path, paddleocr_args):
     
     return "\n".join(output_lines)
 
-def process_image_file_wrapper(args_tuple):
-    image_file_path, paddleocr_args_local = args_tuple
-    return process_image_file(image_file_path, paddleocr_args_local)
-
 def process_input_path(input_path_to_process, paddleocr_args):
     if not os.path.exists(input_path_to_process):
-        logger.error(f"Error: The specified path '{input_path_to_process}' could not be found.")
+        print(f"The specified path '{input_path_to_process}' cannot be found.")
         sys.exit(1)
 
     image_files_to_process = []
@@ -301,7 +288,7 @@ def process_input_path(input_path_to_process, paddleocr_args):
         if input_path_to_process.lower().endswith(SUPPORTED_EXTENSIONS):
             image_files_to_process.append(input_path_to_process)
         else:
-            logger.error(f"File '{input_path_to_process}' is not a supported image file. Supported extensions: {SUPPORTED_EXTENSIONS}")
+            print(f"File '{input_path_to_process}' is not a supported image file. Supported extensions: {SUPPORTED_EXTENSIONS}")
             sys.exit(1)
     elif os.path.isdir(input_path_to_process):
         for filename in os.listdir(input_path_to_process):
@@ -309,21 +296,15 @@ def process_input_path(input_path_to_process, paddleocr_args):
             if os.path.isfile(file_path) and filename.lower().endswith(SUPPORTED_EXTENSIONS):
                 image_files_to_process.append(file_path)
         if not image_files_to_process:
-            logger.warning(f"No supported image files found in directory '{input_path_to_process}'.")
+            print(f"No supported image files found in directory '{input_path_to_process}'.")
             return
     else:
-        logger.error(f"Path '{input_path_to_process}' is not a valid file or directory.")
+        print(f"Path '{input_path_to_process}' is not a valid file or directory.")
         sys.exit(1)
 
     if not image_files_to_process:
         return
 
-    num_processes = min(multiprocessing.cpu_count(), len(image_files_to_process))
-    if num_processes <= 0:
-        num_processes = 1
-
-    tasks = [(img_path, paddleocr_args) for img_path in image_files_to_process]
-    
     results = []
     
     if len(image_files_to_process) == 1:
@@ -332,19 +313,21 @@ def process_input_path(input_path_to_process, paddleocr_args):
             results.append(result_string)
     else:
         try:
-            with multiprocessing.Pool(processes=num_processes) as pool:
-                for result_string in tqdm(pool.imap_unordered(process_image_file_wrapper, tasks), total=len(tasks), desc="Processing images"):
-                    if result_string:
-                        results.append(result_string)
+            for img_path in tqdm(image_files_to_process, desc="Processing images"):
+                result_string = process_image_file(img_path, paddleocr_args)
+                if result_string:
+                    results.append(result_string)
         except Exception as e:
-            logger.error(f"An error occurred during multiprocessing: {e}", exc_info=True)
+            print(f"Unexpected error occurred while processing images: {e}")
+            if paddleocr_args.show_log:
+                import traceback
+                traceback.print_exc()
             results = []
 
     for res_str in results:
         print(res_str)
 
 if __name__ == "__main__":
-    logger.setLevel(logging.INFO)
 
     parser = argparse.ArgumentParser(description="Extracts text from images using PaddleOCR and applies labeling heuristics. Can process a single image file or all image files in a directory.")
     parser.add_argument("input_path", help="Path to the image file or directory to process.")
@@ -366,7 +349,6 @@ if __name__ == "__main__":
     paddleocr_group.add_argument('--use_angle_cls', action='store_true', default=False, help="Use angle classification. Default: False")
     paddleocr_group.add_argument('--use_space_char', action='store_true', default=True, help="Use space character. Default: True")
     paddleocr_group.add_argument('--use_dilation', action='store_true', default=True, help="Use dilation on text regions. Default: True")
-    paddleocr_group.add_argument('--use_mp', action='store_true', default=True, help="Use multiprocessing. Default: True")
     paddleocr_group.add_argument('--show_log', action='store_true', default=False, help="Show PaddleOCR logs. Default: False")
 
     args = parser.parse_args()

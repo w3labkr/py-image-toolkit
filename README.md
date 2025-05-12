@@ -1,6 +1,7 @@
+<!-- filepath: /Users/user/Workspace/w3labkr/github.com/py-image-toolkit/README.md -->
 # py-image-toolkit
 
-`py-image-toolkit` is a Python-based toolkit for image processing. It provides a command-line interface (CLI) through individual scripts (`resize.py`, `crop.py`, and `ocr.py`) for resizing images, performing automatic cropping based on face detection and composition rules, and extracting text using Optical Character Recognition (OCR). It's designed to be fast, efficient, and easy to use.
+`py-image-toolkit` is a Python-based toolkit for image processing. It provides a command-line interface (CLI) through individual scripts (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) for resizing images, performing automatic cropping based on face detection and composition rules, extracting text using Optical Character Recognition (OCR), and optimizing images. It's designed to be fast, efficient, and easy to use.
 
 ---
 
@@ -10,12 +11,13 @@
 py-image-toolkit/
 ├── models/            # Directory for storing models
 │   ├── face_detection_yunet_2023mar.onnx # YuNet model for face detection
-│   ├── ch_PP-OCRv3_det_infer/             # Example: PaddleOCR detection model
-│   ├── ko_PP-OCRv3_rec_infer/             # Example: PaddleOCR Korean recognition model
-│   └── ch_ppocr_mobile_v2.0_cls_infer/    # Example: PaddleOCR classification model
+│   ├── ch_PP-OCRv3_det_infer/           # Example: PaddleOCR detection model
+│   ├── ko_PP-OCRv3_rec_infer/           # Example: PaddleOCR Korean recognition model
+│   └── ch_ppocr_mobile_v2.0_cls_infer/  # Example: PaddleOCR classification model
 ├── resize.py          # CLI script for image resizing logic
 ├── crop.py            # CLI script for face detection and auto-cropping logic
 ├── ocr.py             # CLI script for Optical Character Recognition (OCR)
+├── optimize.py        # CLI script for image optimization and compression
 ├── requirements.txt   # List of required libraries
 └── README.md          # Project documentation
 ```
@@ -23,9 +25,10 @@ py-image-toolkit/
 - `resize.py`: CLI script containing the core logic for image resizing and aspect ratio adjustments.
 - `crop.py`: CLI script containing the core logic for detecting faces and cropping images based on composition rules.
 - `ocr.py`: CLI script providing OCR functionality to extract text from images.
+- `optimize.py`: CLI script providing image optimization and compression functionality.
 - `models/`: Directory for storing machine learning models.
-    - `face_detection_yunet_2023mar.onnx`: Pretrained YuNet face detection model, automatically downloaded if not present for the `crop.py` script.
-    - PaddleOCR models (e.g., `ch_PP-OCRv3_det_infer`, `ko_PP-OCRv3_rec_infer`): Models for text detection, recognition, and classification used by `ocr.py`. These models need to be downloaded manually and placed in the default locations if not specified otherwise via arguments.
+  - `face_detection_yunet_2023mar.onnx`: Pretrained YuNet face detection model, automatically downloaded if not present for the `crop.py` script.
+  - PaddleOCR models (e.g., `ch_PP-OCRv3_det_infer`, `ko_PP-OCRv3_rec_infer`): Models for text detection, recognition, and classification used by `ocr.py`. These models need to be downloaded manually and placed in the default locations if not specified otherwise via arguments.
 - `requirements.txt`: Lists Python packages required to run the project.
 
 ---
@@ -89,7 +92,7 @@ pyenv versions
 
 ## General CLI Options
 
-Each script (`resize.py`, `crop.py`, `ocr.py`) is run directly and has its own set of options. Common options include:
+Each script (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) is run directly and has its own set of options. Common options include:
 
 - `-v, --verbose`: `resize.py` and `crop.py` support this flag to enable detailed (DEBUG level) logging.
 - `ocr.py` provides CLI options for PaddleOCR configuration, and `--show_log` can be used to display PaddleOCR's internal logs. See the `Optical Character Recognition (OCR)` section below for details.
@@ -194,6 +197,45 @@ Examples for `crop`:
 
 ---
 
+## Image Optimization
+
+The `optimize.py` script allows you to compress and optimize images without significant visible quality loss. It supports various formats including JPEG, PNG, WebP, and TIFF, each with format-specific optimizations.
+
+Syntax:
+
+```bash
+python optimize.py <input_path> [options]
+```
+
+Key Options for `optimize`:
+
+- `input_path`: Path to the image file or directory to process (default: `input`).
+- `-o, --output-dir`: Directory to save optimized images (default: `output`).
+- `--overwrite`: Overwrite existing files if they already exist in the output directory (Default: False).
+- `--jpg-quality`: JPEG image quality setting (1-100, default: `85`). Lower values produce smaller files but may reduce quality.
+
+Examples for `optimize`:
+
+- Optimize all images in the `./input` directory with default settings:
+
+  ```bash
+  python optimize.py ./input
+  ```
+
+- Optimize a single image with custom quality (70%) and save to a specific directory:
+
+  ```bash
+  python optimize.py ./input/large_image.jpg -o ./optimized_images --jpg-quality 70
+  ```
+
+- Process all images in the `./photos` directory and overwrite any existing files:
+
+  ```bash
+  python optimize.py ./photos -o ./photos_optimized --overwrite
+  ```
+
+---
+
 ## Optical Character Recognition (OCR)
 
 The `ocr.py` script uses PaddleOCR to extract text from images. It can process single image files or multiple image files within a directory and supports multiprocessing for efficient batch processing of large numbers of images.
@@ -270,6 +312,7 @@ pip install -r requirements.txt
 - If `python resize.py` command fails due to invalid arguments or critical processing errors, it will exit with a non-zero status code. Check terminal output for specific error messages.
 - If `python crop.py` command encounters critical setup issues (e.g., model download failure, output directory problems, invalid input path) or unhandled processing errors, it will exit with a non-zero status code. `CropSetupError` indicates a problem that prevented the operation from starting. Check terminal output and logs for details.
 - If `python ocr.py` command fails, check for PaddleOCR model availability, correct paths, and library installation. Error messages in the terminal or logs should provide more details.
+- If `python optimize.py` command fails, ensure that the image files are valid and that you have appropriate file access permissions. Check terminal output for specific error messages.
 
 ---
 
