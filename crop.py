@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
+from PIL import Image, UnidentifiedImageError
+from typing import Tuple, List, Optional, Dict, Any, Union
+import logging
+import os
 import cv2
 import numpy as np
-import os
 import math
-import urllib.request
 import argparse
-import logging
 import time
 import concurrent.futures
-from PIL import Image, UnidentifiedImageError, ImageOps
-from typing import Tuple, List, Optional, Dict, Any, Union
-import tqdm
 import sys
+from tqdm import tqdm
+import requests
 
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(processName)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
@@ -50,18 +50,14 @@ def download_model(model_url: str, file_path: str, is_main_process: bool) -> boo
         if is_main_process:
             logger.info(f"Downloading model file... ({os.path.basename(file_path)}) from {model_url}")
         try:
-            if is_main_process:
-                with tqdm.tqdm(unit='B', unit_scale=True, miniters=1, desc=f"Downloading {os.path.basename(file_path)}") as t:
-                    def reporthook(blocknum, blocksize, totalsize):
-                        if totalsize > 0:
-                            t.total = totalsize
-                        t.update(blocksize)
-                    urllib.request.urlretrieve(model_url, file_path, reporthook=reporthook)
-            else:
-                 urllib.request.urlretrieve(model_url, file_path)
+            response = requests.get(model_url, stream=True)
+            response.raise_for_status()
+            with open(file_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
 
             if is_main_process:
-                logger.info(f"Download complete. Model saved to {os.path.abspath(file_path)}")
+                logger.info(f"Model file downloaded successfully: {os.path.abspath(file_path)}")
             return True
         except Exception as e:
             logger.error(f"Model file download failed: {e}")
@@ -78,13 +74,13 @@ def parse_aspect_ratio(ratio_str: Optional[str]) -> Optional[float]:
             w_str, h_str = ratio_str.split(':')
             w, h = float(w_str), float(h_str)
             if h <= 0 or w <= 0:
-                logger.warning(f"Ratio width or height cannot be zero or less: '{ratio_str}'. Using original ratio.")
+                logger.warning(f"Invalid ratio values in '{ratio_str}'. Width and height must be positive. Using original ratio.")
                 return None
             return w / h
         else:
             ratio = float(ratio_str)
             if ratio <= 0:
-                logger.warning(f"Ratio must be greater than zero: '{ratio_str}'. Using original ratio.")
+                logger.warning(f"Invalid ratio value '{ratio_str}'. Ratio must be positive. Using original ratio.")
                 return None
             return ratio
     except ValueError:
@@ -94,11 +90,8 @@ def parse_aspect_ratio(ratio_str: Optional[str]) -> Optional[float]:
         logger.error(f"Unexpected error parsing ratio ('{ratio_str}'): {e}")
         return None
 
-def create_output_directory(output_dir: str, dry_run: bool) -> bool:
+def create_output_directory(output_dir: str) -> bool:
     abs_output_dir = os.path.abspath(output_dir)
-    if dry_run:
-        logger.info(f"[DRY RUN] Skipping output directory check/creation: {abs_output_dir}")
-        return True
     if not os.path.exists(abs_output_dir):
         try:
             os.makedirs(abs_output_dir)
@@ -127,31 +120,28 @@ def detect_faces_dnn(detector: cv2.FaceDetectorYN, image: np.ndarray, min_w: int
 
         if faces is not None and faces[1] is not None:
             for face_info in faces[1]:
-                x, y, w, h = map(int, face_info[:4])
+                x, y, w, h = int(face_info[0]), int(face_info[1]), int(face_info[2]), int(face_info[3])
                 if w < min_w or h < min_h:
                     continue
 
-                r_eye_x, r_eye_y = face_info[4:6]; l_eye_x, l_eye_y = face_info[6:8]
-                confidence = face_info[14]
+                landmarks = face_info[4:14].reshape(5, 2).astype(int)
+                score = float(face_info[14])
 
-                x = max(0, x); y = max(0, y)
-                w = min(img_w - x, w); h = min(img_h - y, h)
+                eye_center_x = (landmarks[0][0] + landmarks[1][0]) / 2
+                eye_center_y = (landmarks[0][1] + landmarks[1][1]) / 2
+                eye_center = (int(round(eye_center_x)), int(round(eye_center_y)))
 
-                if w > 0 and h > 0:
-                    bbox_center = (x + w // 2, y + h // 2)
-                    eye_center = bbox_center
+                bbox_center_x = x + w / 2
+                bbox_center_y = y + h / 2
+                bbox_center = (int(round(bbox_center_x)), int(round(bbox_center_y)))
 
-                    if r_eye_x > 0 and r_eye_y > 0 and l_eye_x > 0 and l_eye_y > 0:
-                        ecx = int(round((r_eye_x + l_eye_x) / 2)); ecy = int(round((r_eye_y + l_eye_y) / 2))
-                        ecx = max(0, min(img_w - 1, ecx)); ecy = max(0, min(img_h - 1, ecy))
-                        eye_center = (ecx, ecy)
-
-                    detected_subjects.append({
-                        'bbox': (x, y, w, h),
-                        'bbox_center': bbox_center,
-                        'eye_center': eye_center,
-                        'confidence': confidence
-                    })
+                detected_subjects.append({
+                    'bbox': (x, y, w, h),
+                    'landmarks': landmarks,
+                    'score': score,
+                    'eye_center': eye_center,
+                    'bbox_center': bbox_center
+                })
     except cv2.error as e:
         logger.error(f"OpenCV error during face detection (image size: {img_w}x{img_h}): {e}")
     except Exception as e:
@@ -167,12 +157,29 @@ def select_main_subject(subjects: List[Dict[str, Any]], img_shape: Tuple[int, in
         elif method == 'largest': best_subject = max(subjects, key=lambda s: s['bbox'][2] * s['bbox'][3])
         elif method == 'center':
             img_center = (img_w / 2, img_h / 2)
-            best_subject = min(subjects, key=lambda s: math.dist(s['bbox_center'], img_center))
+            best_subject = min(subjects, key=lambda s: math.dist(s.get('bbox_center', (0,0)), img_center))
         else:
             logger.warning(f"Unknown selection method '{method}'. Defaulting to 'largest'.")
             best_subject = max(subjects, key=lambda s: s['bbox'][2] * s['bbox'][3])
 
-        ref_center = best_subject['eye_center'] if reference_point_type == 'eye' else best_subject['bbox_center']
+        if best_subject:
+            bbox_center_val = best_subject.get('bbox_center', 'N/A')
+            eye_center_val = best_subject.get('eye_center', 'N/A')
+
+            is_eye_center_valid = isinstance(eye_center_val, tuple) and len(eye_center_val) == 2
+            is_bbox_center_valid = isinstance(bbox_center_val, tuple) and len(bbox_center_val) == 2
+
+            if reference_point_type == 'eye' and is_eye_center_valid:
+                ref_center = eye_center_val
+            elif is_bbox_center_valid:
+                ref_center = bbox_center_val
+            else:
+                bx, by, bw, bh = best_subject['bbox']
+                ref_center = (int(round(bx + bw / 2)), int(round(by + bh / 2)))
+        else:
+            logger.warning("No best subject could be determined.")
+            return None
+
         return best_subject['bbox'], ref_center
     except Exception as e:
         logger.error(f"Error selecting main subject: {e}", exc_info=logger.level == logging.DEBUG)
@@ -211,26 +218,28 @@ def calculate_optimal_crop(img_shape: Tuple[int, int], subject_center: Tuple[int
         closest_point = min(rule_points, key=lambda p: math.dist((cx, cy), p))
         target_x, target_y = closest_point
 
-        max_w = 2 * min(target_x, width - target_x)
-        max_h = 2 * min(target_y, height - target_y)
-        if max_w <= 0 or max_h <= 0: return None
+        max_w_for_target = 2 * min(target_x, width - target_x)
+        max_h_for_target = 2 * min(target_y, height - target_y)
+        if max_w_for_target <= 0 or max_h_for_target <= 0:
+            logger.warning(f"Cannot create a valid crop centered at rule point ({target_x},{target_y}) as it's too close to image edge or image dimensions are too small.")
+            return None
 
-        crop_h_from_w = max_w / aspect_ratio
-        crop_w_from_h = max_h * aspect_ratio
+        crop_h_from_w = max_w_for_target / aspect_ratio
+        crop_w_from_h = max_h_for_target * aspect_ratio
 
-        if crop_h_from_w <= max_h + 1e-6:
-            final_w, final_h = max_w, crop_h_from_w
+        if crop_h_from_w <= max_h_for_target + 1e-6:
+            final_w, final_h = max_w_for_target, crop_h_from_w
         else:
-            final_w, final_h = crop_w_from_h, max_h
+            final_w, final_h = crop_w_from_h, max_h_for_target
 
-        x1 = target_x - final_w / 2; y1 = target_y - final_h / 2
-        x2 = x1 + final_w; y2 = y1 + final_h
+        x1_raw = target_x - final_w / 2.0; y1_raw = target_y - final_h / 2.0
+        x2_raw = x1_raw + final_w; y2_raw = y1_raw + final_h
 
-        x1, y1 = max(0, int(round(x1))), max(0, int(round(y1)))
-        x2, y2 = min(width, int(round(x2))), min(height, int(round(y2)))
+        x1, y1 = max(0, int(round(x1_raw))), max(0, int(round(y1_raw)))
+        x2, y2 = min(width, int(round(x2_raw))), min(height, int(round(y2_raw)))
 
         if x1 >= x2 or y1 >= y2:
-            logger.warning(f"Calculated crop area has zero/negative size ({x1},{y1} to {x2},{y2})."); return None
+            logger.warning(f"Calculated crop area has zero/negative size ({x1},{y1}) to ({x2},{y2}). Raw was ({x1_raw:.2f},{y1_raw:.2f}) to ({x2_raw:.2f},{y2_raw:.2f})."); return None
         return x1, y1, x2, y2
     except Exception as e:
         logger.error(f"Error calculating optimal crop (Subject: {subject_center}, RulePt: {closest_point if 'closest_point' in locals() else 'N/A'}): {e}", exc_info=logger.level == logging.DEBUG)
@@ -241,52 +250,38 @@ def apply_padding(crop_coords: Tuple[int, int, int, int], img_shape: Tuple[int, 
     crop_w = x2 - x1; crop_h = y2 - y1
     if padding_percent <= 0: return crop_coords
 
-    pad_x = int(round(crop_w * padding_percent / 100 / 2))
-    pad_y = int(round(crop_h * padding_percent / 100 / 2))
+    pad_x = int(round(crop_w * padding_percent / 100.0 / 2.0))
+    pad_y = int(round(crop_h * padding_percent / 100.0 / 2.0))
 
     new_x1 = max(0, x1 - pad_x); new_y1 = max(0, y1 - pad_y)
     new_x2 = min(img_w, x2 + pad_x); new_y2 = min(img_h, y2 + pad_y)
 
     if new_x1 >= new_x2 or new_y1 >= new_y2:
-        logger.warning(f"Crop area invalid after {padding_percent}% padding. No padding applied.")
+        logger.warning(f"Crop area invalid after {padding_percent}% padding. Original: ({x1},{y1})-({x2},{y2}). Padded: ({new_x1},{new_y1})-({new_x2},{new_y2}). No padding applied.")
         return crop_coords
     return new_x1, new_y1, new_x2, new_y2
 
-def _load_and_prepare_image(image_path: str) -> Tuple[Optional[np.ndarray], Optional[bytes], Optional[str]]:
-    filename = os.path.basename(image_path); exif_data = None; original_ext = os.path.splitext(image_path)[1].lower(); img_bgr = None
+def _load_and_prepare_image(image_path: str) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    filename = os.path.basename(image_path); original_ext = os.path.splitext(image_path)[1].lower(); img_bgr = None
     try:
         with Image.open(image_path) as pil_img:
-            try:
-                pil_img = ImageOps.exif_transpose(pil_img)
-                exif_data = pil_img.info.get('exif')
-            except Exception as exif_err:
-                logger.warning(f"{filename}: Error processing EXIF data: {exif_err}. Proceeding without EXIF.")
-                exif_data = None
-
             pil_img_rgb = pil_img.convert('RGB')
             img_bgr = np.array(pil_img_rgb)[:, :, ::-1].copy()
-    except FileNotFoundError: logger.error(f"{filename}: Image file not found."); return None, None, None
-    except UnidentifiedImageError: logger.error(f"{filename}: Cannot open or unsupported image format."); return None, None, None
-    except Exception as e: logger.error(f"{filename}: Error loading image: {e}", exc_info=logger.level == logging.DEBUG); return None, None, None
-    return img_bgr, exif_data, original_ext
+    except FileNotFoundError: logger.error(f"{filename}: Image file not found."); return None, None
+    except UnidentifiedImageError: logger.error(f"{filename}: Cannot open or unsupported image format."); return None, None
+    except Exception as e: logger.error(f"{filename}: Error loading image: {e}", exc_info=logger.level == logging.DEBUG); return None, None
+    return img_bgr, original_ext
 
 def _determine_output_filename(base_filename: str, suffix_str: str, settings: argparse.Namespace, original_ext: str) -> Tuple[str, str]:
     target_ratio_str = str(settings.ratio) if settings.ratio is not None else "Orig"
     ratio_str = f"_r{target_ratio_str.replace(':', '-')}"; ref_str = f"_ref{settings.reference}"
 
-    output_format = settings.output_format.lower() if settings.output_format else None
-    if output_format:
-        output_ext = f".{output_format.lstrip('.')}"
-        if output_ext.lower() not in Image.registered_extensions():
-             logger.warning(f"{base_filename}: Unsupported output format '{settings.output_format}'. Using original '{original_ext}'.")
-             output_ext = original_ext
-    else:
-        output_ext = original_ext
+    output_ext = original_ext
 
     out_filename = f"{base_filename}{suffix_str}{ratio_str}{ref_str}{output_ext}"
     return out_filename, output_ext
 
-def _save_cropped_image(cropped_bgr: np.ndarray, out_path: str, output_ext: str, settings: argparse.Namespace, exif_data: Optional[bytes]) -> bool:
+def _save_cropped_image(cropped_bgr: np.ndarray, out_path: str, settings: argparse.Namespace) -> bool:
     filename = os.path.basename(out_path)
     try:
         if cropped_bgr.size == 0: raise ValueError("Cropped image data is empty.")
@@ -294,24 +289,13 @@ def _save_cropped_image(cropped_bgr: np.ndarray, out_path: str, output_ext: str,
         cropped_rgb = cv2.cvtColor(cropped_bgr, cv2.COLOR_BGR2RGB)
         pil_cropped_img = Image.fromarray(cropped_rgb)
 
-        save_options = {}
-        if not settings.strip_exif and exif_data and isinstance(exif_data, bytes):
-            save_options['exif'] = exif_data
-
-        if output_ext.lower() in ['.jpg', '.jpeg']:
-            save_options['quality'] = settings.jpeg_quality
-            save_options['optimize'] = True
-            save_options['progressive'] = True
-        elif output_ext.lower() == '.webp':
-            save_options['quality'] = settings.webp_quality
-
-        pil_cropped_img.save(out_path, **save_options)
+        pil_cropped_img.save(out_path)
         return True
     except IOError as e: logger.error(f"{filename}: File write error: {e}"); return False
     except ValueError as e: logger.error(f"{filename}: Cropped image processing error: {e}"); return False
     except Exception as e: logger.error(f"{filename}: Error saving cropped image: {e}", exc_info=settings.verbose); return False
 
-def _process_composition_rule(rule_name: str, rule_suffix: str, img_bgr: np.ndarray, ref_center: Tuple[int, int], current_settings: argparse.Namespace, exif_data: Optional[bytes], original_ext: str) -> Tuple[bool, bool, str]:
+def _process_composition_rule(rule_name: str, rule_suffix: str, img_bgr: np.ndarray, ref_center: Tuple[int, int], current_settings: argparse.Namespace, original_ext: str) -> Tuple[bool, bool, str]:
     filename = os.path.basename(current_settings.input_path); base_filename = os.path.splitext(filename)[0]
     img_h, img_w = img_bgr.shape[:2]
     saved_actual_file = False; was_skipped_overwrite = False; error_message = ""
@@ -329,18 +313,15 @@ def _process_composition_rule(rule_name: str, rule_suffix: str, img_bgr: np.ndar
     out_filename, output_ext = _determine_output_filename(base_filename, rule_suffix, current_settings, original_ext)
     out_path = os.path.join(current_settings.output_dir, out_filename)
 
-    if not current_settings.overwrite and os.path.exists(out_path) and not current_settings.dry_run:
+    if not current_settings.overwrite and os.path.exists(out_path):
         error_message = f"Rule '{rule_name}': Skipped (file exists, overwrite disabled)."
         was_skipped_overwrite = True
         return saved_actual_file, was_skipped_overwrite, error_message
 
-    if current_settings.dry_run:
-        saved_actual_file = True
-    else:
-        cropped_img_bgr = img_bgr[y1:y2, x1:x2]
-        save_success = _save_cropped_image(cropped_img_bgr, out_path, output_ext, current_settings, exif_data)
-        if save_success: saved_actual_file = True
-        else: error_message = f"Rule '{rule_name}': Failed to save file '{out_filename}'."
+    cropped_img_bgr = img_bgr[y1:y2, x1:x2]
+    save_success = _save_cropped_image(cropped_img_bgr, out_path, current_settings)
+    if save_success: saved_actual_file = True
+    else: error_message = f"Rule '{rule_name}': Failed to save file '{out_filename}'."
     return saved_actual_file, was_skipped_overwrite, error_message
 
 def process_image(image_path: str, global_settings: argparse.Namespace, detector: cv2.FaceDetectorYN) -> Dict[str, Any]:
@@ -350,9 +331,9 @@ def process_image(image_path: str, global_settings: argparse.Namespace, detector
     current_settings = argparse.Namespace(**vars(global_settings))
     current_settings.input_path = image_path
 
-    status = {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules': 0, 'message': '', 'dry_run': current_settings.dry_run}
+    status = {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules': 0, 'message': ''}
 
-    img_bgr, exif_data, original_ext = _load_and_prepare_image(image_path)
+    img_bgr, original_ext = _load_and_prepare_image(image_path)
     if img_bgr is None: status['message'] = "Failed to load or prepare image."; return status
 
     img_h, img_w = img_bgr.shape[:2]
@@ -372,34 +353,41 @@ def process_image(image_path: str, global_settings: argparse.Namespace, detector
 
     saved_rules_count = 0; skipped_overwrite_count_for_image = 0; rule_errors = []
     for rule_name, rule_suffix in rules_to_process:
-        saved, skipped_overwrite, error_msg = _process_composition_rule(rule_name, rule_suffix, img_bgr, ref_center, current_settings, exif_data, original_ext)
+        saved, skipped_overwrite, error_msg = _process_composition_rule(rule_name, rule_suffix, img_bgr, ref_center, current_settings, original_ext)
         if saved: saved_rules_count += 1
         if skipped_overwrite: skipped_overwrite_count_for_image +=1
         if error_msg and not saved and not skipped_overwrite : rule_errors.append(error_msg)
 
     end_time = time.time(); processing_time = end_time - start_time
     status['skipped_overwrite_rules'] = skipped_overwrite_count_for_image
+    status['saved_files'] = saved_rules_count
 
     if saved_rules_count > 0:
-        status['success'] = True; status['saved_files'] = saved_rules_count
-        action = "simulated" if current_settings.dry_run else "saved"
-        status['message'] = f"Processed ({saved_rules_count} file(s) {action}, {skipped_overwrite_count_for_image} rule(s) skipped by overwrite, {processing_time:.2f}s)."
-        if rule_errors: status['message'] += f" Some rules failed: {'; '.join(rule_errors)}"
-    elif skipped_overwrite_count_for_image > 0 and not rule_errors :
+        status['success'] = True
+        status['message'] = f"Saved {saved_rules_count} file(s)"
+        if skipped_overwrite_count_for_image > 0:
+            status['message'] += f", skipped {skipped_overwrite_count_for_image} rule(s) (overwrite)"
+        if rule_errors:
+             status['message'] += f". Errors: {'; '.join(rule_errors)}"
+    elif skipped_overwrite_count_for_image > 0:
         status['success'] = False
-        status['message'] = f"All applicable rules skipped due to overwrite policy ({processing_time:.2f}s)."
+        status['message'] = f"Skipped {skipped_overwrite_count_for_image} rule(s) (overwrite policy)"
+        if rule_errors:
+             status['message'] += f". Other errors: {'; '.join(rule_errors)}"
     else:
         status['success'] = False
         err_summary = '; '.join(rule_errors) if rule_errors else "Crop/Save failed or no faces/rules applicable."
-        status['message'] = f"Failed to {'simulate' if current_settings.dry_run else 'crop/save'} for all rules ({processing_time:.2f}s). Errors: {err_summary}"
+        status['message'] = f"Failed. Errors: {err_summary}"
+
+    status['message'] += f" ({processing_time:.2f}s)."
     return status
 
 def process_image_wrapper(args_tuple: Tuple[str, argparse.Namespace]) -> Dict[str, Any]:
     image_path, settings = args_tuple; filename = os.path.basename(image_path); detector = None
     try:
         if not os.path.exists(settings.yunet_model_path):
-             if not download_model(YUNET_MODEL_URL, settings.yunet_model_path, False): # Pass False for is_main_process
-                  raise RuntimeError(f"Model file {settings.yunet_model_path} not found and download failed in worker.")
+             if not download_model(YUNET_MODEL_URL, settings.yunet_model_path, False):
+                 raise CropSetupError(f"Worker failed to download model: {settings.yunet_model_path}")
 
         detector = cv2.FaceDetectorYN.create(settings.yunet_model_path, "", (0, 0))
         detector.setScoreThreshold(settings.confidence); detector.setNMSThreshold(settings.nms)
@@ -407,12 +395,12 @@ def process_image_wrapper(args_tuple: Tuple[str, argparse.Namespace]) -> Dict[st
 
     except cv2.error as e:
         logger.error(f"{filename}: OpenCV error in worker: {e}", exc_info=settings.verbose)
-        return {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"OpenCV Error: {e}", 'dry_run': settings.dry_run}
+        return {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"OpenCV Error: {e}"}
     except Exception as e:
         logger.error(f"{filename}: Critical error in worker: {e}", exc_info=True)
-        return {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"Critical error in worker: {e}", 'dry_run': settings.dry_run}
+        return {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"Critical error in worker: {e}"}
 
-def execute_crop_operation(settings: argparse.Namespace) -> int:
+def execute_crop_operation(settings: argparse.Namespace) -> Dict[str, int]:
     if settings.yunet_model_path is None:
         settings.yunet_model_path = os.path.join(MODEL_DIR_NAME, YUNET_MODEL_FILENAME)
     settings.yunet_model_path = os.path.abspath(settings.yunet_model_path)
@@ -421,47 +409,52 @@ def execute_crop_operation(settings: argparse.Namespace) -> int:
 
     setup_logging(logging.DEBUG if settings.verbose else logging.INFO)
 
-    logger.info(f"===== Image Cropping Script Started =====")
-    if settings.dry_run:
-        logger.info("***** Running in Dry Run mode. No files will be saved. *****")
-
-    if not download_model(YUNET_MODEL_URL, settings.yunet_model_path, True): # Pass True for is_main_process
+    if not download_model(YUNET_MODEL_URL, settings.yunet_model_path, True):
         raise CropSetupError(f"DNN model file '{settings.yunet_model_path}' is not available or download failed.")
 
-    if not create_output_directory(settings.output_dir, settings.dry_run):
+    if not create_output_directory(settings.output_dir):
         raise CropSetupError(f"Could not prepare output directory '{settings.output_dir}'.")
 
     input_path = settings.input_path
     skipped_scan_items_details = []
-    images_with_errors_count = 0
+    
+    summary = {'processed': 0, 'saved': 0, 'skipped': 0, 'failed': 0}
 
     if os.path.isfile(input_path):
         if not input_path.lower().endswith(SUPPORTED_EXTENSIONS):
             logger.warning(f"Single file '{input_path}' is not a supported image type. Skipping.")
-            logger.info(f"===== Image Cropping Script Finished =====")
-            return 0
+            return summary 
 
         logger.info(f"Starting single file processing: {os.path.abspath(input_path)}")
+        summary['processed'] = 1
         detector = None
         try:
             detector = cv2.FaceDetectorYN.create(settings.yunet_model_path, "", (0, 0))
             detector.setScoreThreshold(settings.confidence); detector.setNMSThreshold(settings.nms)
             result = process_image(input_path, settings, detector)
 
-            if result.get('success'):
-                logger.info(f"{os.path.basename(input_path)}: {result.get('message', 'Processing finished.')}")
+            saved_count = result.get('saved_files', 0)
+            skipped_count = result.get('skipped_overwrite_rules', 0)
+            is_success = result.get('success', False)
+            message = result.get('message', "No message provided.")
+
+            summary['saved'] = saved_count
+            summary['skipped'] = skipped_count
+
+            if is_success and saved_count > 0:
+                 logger.info(f"Processed '{input_path}': {message}")
+            elif not is_success and saved_count == 0 and skipped_count > 0:
+                 logger.info(f"Skipped '{input_path}': {message}")
             else:
-                if result.get('skipped_overwrite_rules', 0) > 0 and not result.get('saved_files',0) and "failed" not in result.get('message','').lower() :
-                     logger.info(f"{os.path.basename(input_path)}: {result.get('message', 'All rules skipped by overwrite policy.')}")
-                else:
-                     logger.warning(f"{os.path.basename(input_path)}: {result.get('message', 'Processing failed or no faces/rules applicable.')}")
-                     images_with_errors_count += 1
+                 logger.error(f"Failed '{input_path}': {message}")
+                 summary['failed'] = 1
+                 
         except cv2.error as e:
             logger.critical(f"Failed to load face detection model (single file): {e}")
-            images_with_errors_count += 1
+            summary['failed'] = 1
         except Exception as e:
             logger.critical(f"Error during single file processing: {e}", exc_info=True)
-            images_with_errors_count += 1
+            summary['failed'] = 1
 
     elif os.path.isdir(input_path):
         image_files = []
@@ -469,15 +462,10 @@ def execute_crop_operation(settings: argparse.Namespace) -> int:
             all_items = os.listdir(input_path)
             for item_name in all_items:
                 item_path = os.path.join(input_path, item_name)
-                if os.path.isfile(item_path):
-                    if item_name.lower().endswith(SUPPORTED_EXTENSIONS):
-                        image_files.append(item_path)
-                    else:
-                        skipped_scan_items_details.append(f"{item_name} (Unsupported extension)")
-                elif os.path.isdir(item_path):
-                    skipped_scan_items_details.append(f"{item_name} (Directory)")
-                else:
-                    skipped_scan_items_details.append(f"{item_name} (Not a file or directory)")
+                if os.path.isfile(item_path) and item_name.lower().endswith(SUPPORTED_EXTENSIONS):
+                    image_files.append(item_path)
+                elif os.path.isfile(item_path):
+                    skipped_scan_items_details.append(f"Skipped non-image file: {item_name}")
 
         except OSError as e:
             logger.critical(f"Cannot access input directory '{os.path.abspath(input_path)}': {e}")
@@ -486,9 +474,12 @@ def execute_crop_operation(settings: argparse.Namespace) -> int:
         if not image_files:
             logger.info(f"No supported image files ({', '.join(SUPPORTED_EXTENSIONS)}) found in '{os.path.abspath(input_path)}'.")
             if skipped_scan_items_details:
-                 logger.info(f"{len(skipped_scan_items_details)} other item(s) were found and skipped during scan.")
-            logger.info(f"===== Image Cropping Script Finished =====")
-            return 0
+                 logger.info("Other items found during scan (and skipped):")
+                 for detail in skipped_scan_items_details:
+                     logger.info(f"  - {detail}")
+            return summary 
+
+        summary['processed'] = len(image_files)
 
         available_cpus = os.cpu_count()
         if available_cpus is None:
@@ -515,50 +506,78 @@ def execute_crop_operation(settings: argparse.Namespace) -> int:
 
         if is_parallel:
             with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as executor:
-                try:
-                    future_results = executor.map(process_image_wrapper, tasks)
-                    for result in tqdm.tqdm(future_results, total=len(tasks), desc="Processing images", unit="file", **tqdm_extra_kwargs):
-                        results_list.append(result)
-                except Exception as e:
-                     logger.critical(f"Error during parallel processing execution: {e}", exc_info=True)
-                     images_with_errors_count = len(tasks)
+                future_to_path = {executor.submit(process_image_wrapper, task): task[0] for task in tasks}
+                for future in tqdm(concurrent.futures.as_completed(future_to_path), total=len(tasks), desc="Processing images", unit="image", **tqdm_extra_kwargs):
+                    path = future_to_path[future]
+                    try:
+                        res = future.result()
+                        results_list.append(res)
+                    except Exception as exc:
+                        logger.error(f'{os.path.basename(path)} generated an exception: {exc}')
+                        results_list.append({'filename': os.path.basename(path), 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"Exception in worker: {exc}"})
         else:
             detector = None
             try:
-                detector = cv2.FaceDetectorYN.create(settings.yunet_model_path, "", (0, 0))
-                detector.setScoreThreshold(settings.confidence); detector.setNMSThreshold(settings.nms)
-                for task_args_item in tqdm.tqdm(tasks, desc="Processing images sequentially", unit="file", **tqdm_extra_kwargs):
-                     results_list.append(process_image(task_args_item[0], task_args_item[1], detector))
+                if not os.path.exists(settings.yunet_model_path):
+                    if not download_model(YUNET_MODEL_URL, settings.yunet_model_path, True):
+                        logger.critical(f"DNN model file '{settings.yunet_model_path}' is not available or download failed for sequential run.")
+                        detector_init_failed_sequentially = True
+                if not detector_init_failed_sequentially:
+                    detector = cv2.FaceDetectorYN.create(settings.yunet_model_path, "", (0,0))
+                    detector.setScoreThreshold(settings.confidence)
+                    detector.setNMSThreshold(settings.nms)
             except cv2.error as e:
-                logger.critical(f"Failed to load face detection model (sequential): {e}")
+                logger.critical(f"Failed to load face detection model for sequential processing: {e}")
                 detector_init_failed_sequentially = True
-                images_with_errors_count = len(tasks)
             except Exception as e:
-                logger.critical(f"Error during sequential processing loop: {e}", exc_info=True)
-                images_with_errors_count = len(tasks)
+                logger.critical(f"Unexpected error initializing detector for sequential run: {e}")
+                detector_init_failed_sequentially = True
 
-        successful_image_count = 0; total_generated_count = 0; total_skipped_overwrite_count = 0
+            if detector_init_failed_sequentially:
+                logger.error("Cannot proceed with sequential processing due to detector initialization failure.")
+                for img_path, _ in tasks:
+                    results_list.append({'filename': os.path.basename(img_path), 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': "Detector initialization failed"})
+                summary['failed'] = len(image_files)
+            else:
+                for task_args in tqdm(tasks, desc="Processing images (sequentially)", unit="image", **tqdm_extra_kwargs):
+                    img_path, task_settings = task_args
+                    try:
+                        res = process_image(img_path, task_settings, detector)
+                        results_list.append(res)
+                    except Exception as exc:
+                        logger.error(f'{os.path.basename(img_path)} generated an exception during sequential processing: {exc}')
+                        results_list.append({'filename': os.path.basename(img_path), 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"Exception during sequential processing: {exc}"})
 
-        if not detector_init_failed_sequentially and not (is_parallel and images_with_errors_count == len(tasks)):
+        if not detector_init_failed_sequentially:
             current_errors = 0
-            for res_idx, res in enumerate(results_list):
-                if res and isinstance(res, dict):
-                    if res.get('success', False):
-                        successful_image_count += 1
-                    elif not res.get('success', False) and \
-                         not (res.get('skipped_overwrite_rules', 0) > 0 and \
-                              not res.get('saved_files', 0) and \
-                              "failed" not in res.get('message','').lower()):
-                        current_errors +=1
-                        logger.warning(f"{res.get('filename')}: {res.get('message')}")
+            total_files_saved = 0
+            total_files_skipped_overwrite = 0
 
-                    total_generated_count += res.get('saved_files', 0)
-                    total_skipped_overwrite_count += res.get('skipped_overwrite_rules', 0)
+            for res_idx, res in enumerate(results_list):
+                filename = res.get('filename', f"UnknownFile_{res_idx}")
+                saved_count = res.get('saved_files', 0)
+                skipped_count = res.get('skipped_overwrite_rules', 0)
+                is_success = res.get('success', False)
+                message = res.get('message', "No message provided.")
+                
+                total_files_saved += saved_count
+                total_files_skipped_overwrite += skipped_count
+
+                if is_success and saved_count > 0:
+                    logger.info(f"Processed '{filename}': {message}")
+                elif not is_success and saved_count == 0 and skipped_count > 0:
+                    logger.info(f"Skipped '{filename}': {message}")
                 else:
-                     current_errors +=1
-                     failed_filename = tasks[res_idx][0] if res_idx < len(tasks) else "Unknown file"
-                     logger.error(f"Received invalid result from worker for {os.path.basename(failed_filename)}: {res}")
-            images_with_errors_count = current_errors
+                    logger.error(f"Failed '{filename}': {message}")
+                    current_errors += 1
+                        
+            summary['saved'] = total_files_saved
+            summary['skipped'] = total_files_skipped_overwrite 
+            summary['failed'] = current_errors
+            
+            if total_files_skipped_overwrite > 0:
+                 logger.info(f"{total_files_skipped_overwrite} total output rule(s) were skipped due to overwrite policy across all files.")
+
     else:
         if not os.path.exists(input_path):
              err_msg = f"Input path not found: {os.path.abspath(input_path)}"
@@ -569,7 +588,7 @@ def execute_crop_operation(settings: argparse.Namespace) -> int:
              logger.critical(err_msg)
              raise CropSetupError(err_msg)
 
-    return images_with_errors_count
+    return summary
 
 def main():
     parser = argparse.ArgumentParser(
@@ -578,9 +597,8 @@ def main():
     )
     parser.add_argument("input_path", help="Path to the image file or directory to process.")
     parser.add_argument("-o", "--output_dir", default="output", help="Directory to save results (Default: 'output').")
-    
     parser.add_argument("--overwrite", action="store_true", default=False, help="Overwrite existing output files (Default: False).")
-    parser.add_argument("--dry-run", action="store_true", default=False, help="Simulate processing without saving files (Default: False).")
+    parser.add_argument("-v", "--verbose", action="store_true", default=False, help="Enable detailed (DEBUG level) logging for the crop operation (Default: False).")
 
     parser.add_argument("-m", "--method", choices=['largest', 'center'], default='largest', help="Method to select main subject (Default: largest).")
     parser.add_argument("--ref", "--reference", dest="reference", choices=['eye', 'box'], default='box', help="Reference point for composition (Default: box).")
@@ -592,26 +610,38 @@ def main():
     parser.add_argument("-r", "--ratio", type=str, default=None, help="Target crop aspect ratio (e.g., '16:9', '1.0', 'None') (Default: None).")
     parser.add_argument("--rule", choices=['thirds', 'golden', 'both'], default='both', help="Composition rule(s) (Default: both).")
     parser.add_argument("-p", "--padding-percent", type=float, default=5.0, help="Padding percentage around crop (%) (Default: 5.0).")
-
-    parser.add_argument("--output-format", type=str, default=None, help="Output image format (e.g., 'jpg', 'png', 'webp'). Default: original.")
-    parser.add_argument("-q", "--jpeg-quality", type=int, choices=range(1, 101), metavar="[1-100]", default=95, help="JPEG quality (1-100) (Default: 95).")
-    parser.add_argument("--webp-quality", type=int, choices=range(1, 101), metavar="[1-100]", default=80, help="WebP quality (1-100) (Default: 80).")
-    parser.add_argument("--strip-exif", action="store_true", default=False, help="Remove EXIF data from output images (Default: False).")
     
     parser.add_argument("--yunet-model-path", type=str, default=None, help=f"Path to the YuNet ONNX model file. If not specified, it defaults to '{MODEL_DIR_NAME}/{YUNET_MODEL_FILENAME}' and will be downloaded if missing.")
-
-    parser.add_argument("-v", "--verbose", action="store_true", default=False, help="Enable detailed (DEBUG level) logging for the crop operation (Default: False).")
 
     args = parser.parse_args()
 
     try:
-        error_image_count = execute_crop_operation(args)
-        if error_image_count > 0:
-            logger.error(f"Crop operation completed with {error_image_count} image(s) having errors. Please review logs for details.")
+        summary = execute_crop_operation(args) 
+        
+        total_processed = summary.get('processed', 0)
+        total_saved = summary.get('saved', 0) 
+        total_skipped_overwrite = summary.get('skipped', 0) 
+        total_failed = summary.get('failed', 0) 
+
+        logger.info(f"===== Image Cropping Script Finished =====")
+        logger.info(f"Summary: Images Processed={total_processed}, Outputs Saved={total_saved}, Outputs Skipped(Overwrite)={total_skipped_overwrite}, Images Failed={total_failed}")
+
+        if total_failed > 0:
+            logger.warning(f"Completed with {total_failed} image(s) failing processing.")
             sys.exit(1)
+        elif total_processed == 0 and not os.path.isfile(args.input_path):
+             logger.info("No images were processed.")
+             sys.exit(0)
+        elif total_saved > 0:
+             logger.info(f"Completed successfully (saved {total_saved} output files).")
+             sys.exit(0)
+        elif total_skipped_overwrite > 0:
+             logger.info(f"Completed, but no new output files were saved due to overwrite policy (skipped {total_skipped_overwrite} outputs).")
+             sys.exit(0)
         else:
-            logger.info("Crop operation completed successfully for all processed images.")
-            sys.exit(0)
+             logger.info("Completed, but no output files were generated (check logs for details).")
+             sys.exit(0)
+            
     except CropSetupError as e:
         logger.critical(f"Setup Error: {e}")
         sys.exit(2)

@@ -20,12 +20,12 @@ py-image-toolkit/
 └── README.md          # Project documentation
 ```
 
-- `resize.py`: CLI script containing the core logic for image resizing, aspect ratio adjustments, and format conversion.
+- `resize.py`: CLI script containing the core logic for image resizing and aspect ratio adjustments.
 - `crop.py`: CLI script containing the core logic for detecting faces and cropping images based on composition rules.
-- `ocr.py`: CLI script providing OCR functionality to extract text from images and classify it using predefined labels.
+- `ocr.py`: CLI script providing OCR functionality to extract text from images.
 - `models/`: Directory for storing machine learning models.
     - `face_detection_yunet_2023mar.onnx`: Pretrained YuNet face detection model, automatically downloaded if not present for the `crop.py` script.
-    - PaddleOCR models (e.g., `ch_PP-OCRv3_det_infer`, `ko_PP-OCRv3_rec_infer`): Models for text detection, recognition, and classification used by `ocr.py`. These models need to be downloaded manually or specified via path arguments if not in the default location.
+    - PaddleOCR models (e.g., `ch_PP-OCRv3_det_infer`, `ko_PP-OCRv3_rec_infer`): Models for text detection, recognition, and classification used by `ocr.py`. These models need to be downloaded manually and placed in the default locations if not specified otherwise via arguments.
 - `requirements.txt`: Lists Python packages required to run the project.
 
 ---
@@ -39,7 +39,7 @@ py-image-toolkit/
   - `opencv-python`
   - `Pillow`
   - `tqdm`
-  - `piexif` (for `resize.py` script if preserving EXIF in some cases)
+  - `piexif`
   - `numpy`
   - `paddleocr` (for `ocr.py` script)
   - `paddlepaddle` or `paddlepaddle-gpu` (for `ocr.py` script)
@@ -89,75 +89,65 @@ pyenv versions
 
 ## General CLI Options
 
-Each script (`resize.py`, `crop.py`, `ocr.py`) is executed directly and has its own set of options. Common options related to verbosity include:
+Each script (`resize.py`, `crop.py`, `ocr.py`) is run directly and has its own set of options. Common options include:
 
 - `-v, --verbose`: `resize.py` and `crop.py` support this flag to enable detailed (DEBUG level) logging.
-- `--show_log`: `ocr.py` uses this flag to show PaddleOCR's internal logs.
+- `ocr.py` provides CLI options for PaddleOCR configuration, and `--show_log` can be used to display PaddleOCR's internal logs. See the `Optical Character Recognition (OCR)` section below for details.
 
 ---
 
 ## Image Resizing
 
-The `resize.py` script processes images from an input directory by resizing them while optionally converting formats and handling EXIF metadata. It employs multiprocessing to speed up batch processing and offers detailed logging.
+The `resize.py` script processes images from an input directory or a single image file by resizing them. It preserves EXIF metadata where possible (this is the default behavior of the underlying Pillow library) and saves images in their original format. It employs multiprocessing to speed up batch processing and offers detailed logging.
 
 - Aspect Ratio Resizing: Maintains aspect ratio while resizing.
 - Fixed Size Resizing: Forces images to fit specific dimensions.
-- Format Conversion: Supports PNG, JPG, WEBP, and keeping the original format.
-- EXIF Metadata Preservation: Keeps original metadata intact by default.
+- EXIF Metadata Preservation: Preserves original EXIF metadata where possible.
 - Recursive Processing: Processes directories and subdirectories.
 
 Syntax:
 
 ```bash
-python resize.py <input_dir> [options]
+python resize.py <input_path> [options]
 ```
 
 Key Options for `resize`:
 
-- `input_dir`: Path to the source image folder or a single image file (Default: `input`).
-- `-o, --output-dir`: Output directory for processed images (Default: `output`).
-- `-f, --output-format`: Target output file format (`original`, `png`, `jpg`, `webp`). (Default: `original`).
-- `-r, --ratio`: Resize ratio behavior (`aspect_ratio`, `fixed`, `none`). (Default: `aspect_ratio`).
+- `input_dir`: Path to the source image folder or a single image file (default: `input`).
+- `-o, --output-dir`: Directory to save processed images (default: `output`).
+- `-r, --ratio`: Resize ratio behavior (`aspect_ratio`, `fixed`, `none`). (default: `aspect_ratio`).
   - `aspect_ratio`: Maintain aspect ratio to fit the target size. Requires at least one of `--width` or `--height` to be positive.
-  - `fixed`: Force resize to exact dimensions (may distort). Both `--width` and `--height` must be positive.
-  - `none`: No resizing; only format conversion and EXIF handling will be applied. If `width` or `height` are specified with `none`, a warning will be shown as they are ignored.
-- `-w, --width`: Target width in pixels for resizing (Default: `0`).
-- `-H, --height`: Target height in pixels for resizing (Default: `0`).
-- `--filter`: Resampling filter for resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). (Default: `lanczos`).
-- `-q, --jpeg-quality`: Quality for JPG output (1-100). (Default: `95`). A warning is shown if used when output format is not JPG.
-- `--webp-quality`: Quality for WEBP output (1-100). (Default: `80` for lossy). A warning is shown if used when output format is not WEBP.
-- `--webp-lossless`: Use lossless compression for WEBP output. A warning is shown if used when output format is not WEBP.
-- `--strip-exif`: Remove all EXIF metadata from images.
+  - `none`: No resizing. If `width` or `height` are specified with `none`, a warning will be shown as they are ignored.
+- `-w, --width`: Target width for resizing in pixels (default: `0`).
+- `-H, --height`: Target height for resizing in pixels (default: `0`).
+- `--filter`: Resampling filter to use when resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). (default: `lanczos`).
 - `--overwrite`: Overwrite existing output files. If not specified, existing files will be skipped.
-- `--include-extensions`: Process only files with these extensions (e.g., `jpg png`). Replaces default list. Cannot be used with `--exclude-extensions`.
-- `--exclude-extensions`: Exclude files with these extensions from processing (e.g., `gif tiff`). Applied after default/include list. Cannot be used with `--include-extensions`.
 
 Examples for `resize`:
 
 - Resize images in `./input` to a width of 1280px, maintaining aspect ratio:
+
   ```bash
   python resize.py ./input -w 1280
   ```
-- Resize images to fixed 720x600 dimensions and output as PNG:
+
+- Resize images to fixed 720x600 dimensions:
+
   ```bash
-  python resize.py ./input -f png -r fixed -w 720 -H 600
+  python resize.py ./input -o ./output_resized -r fixed -w 720 -H 600
   ```
-- Convert images to WEBP format without resizing and strip EXIF data:
+
+- Process images in `./input` without resizing (e.g., to copy to output directory, useful with `--overwrite`):
+
   ```bash
-  python resize.py ./input -f webp -r none --strip-exif
+  python resize.py ./input -r none --overwrite
   ```
 
 ---
 
-## Face Detection & Auto-Cropping
+## Image Cropping
 
-The `crop.py` script detects faces in images and automatically crops them based on face detection and composition rules.
-
-- DNN-based Face Detection: Uses OpenCV’s YuNet model for face detection.
-- Composition-Aware Cropping: Applies Rule of Thirds, Golden Ratio, or both.
-- Main Subject Selection: Selects either the largest face or the one closest to the image center.
-- Aspect Ratio Cropping: Supports standard ratios like 16:9, 1:1, or custom.
-- Parallel Processing: Speeds up batch processing using multiple CPU cores for directory input.
+The `crop.py` script is designed to detect faces in images and automatically crop them based on composition rules like the rule of thirds or the golden ratio. It identifies subjects in the image, determines the main subject, and then calculates the optimal crop area. It automatically downloads the face detection model if needed.
 
 Syntax:
 
@@ -167,51 +157,46 @@ python crop.py <input_path> [options]
 
 Key Options for `crop`:
 
-- `input_path`: Path to the image file or directory to process (Default: `input`).
+- `input_path`: (Required) Path to the image file or directory to process.
 - `-o, --output_dir`: Directory to save results (Default: `output`).
-- `--overwrite`: Overwrite existing output files (Default: False, files are skipped).
-- `--dry-run`: Simulate processing without saving files (Default: False).
-- `-m, --method`: Method to select main subject (`largest`, `center`) (Default: `largest`).
-- `--ref, --reference`: Reference point for composition (`eye` center, `box` center of the face) (Default: `box`).
-- `-c, --confidence`: Minimum face detection confidence (0.0-1.0) (Default: `0.6`).
-- `-n, --nms`: Face detection Non-Maximum Suppression (NMS) threshold (0.0-1.0) (Default: `0.3`).
-- `--min-face-width`: Minimum detected face width in pixels (Default: `30`).
-- `--min-face-height`: Minimum detected face height in pixels (Default: `30`).
-- `-r, --ratio`: Target crop aspect ratio (e.g., `16:9`, `1.0`, `None` for original) (Default: `None`). Use 'None' (case-insensitive string) or omit for original aspect ratio.
-- `--rule`: Composition rule(s) to apply (`thirds`, `golden`, `both`) (Default: `both`).
-- `-p, --padding-percent`: Padding percentage around crop area (%) (Default: `5.0`).
-- `--output-format`: Output image format (e.g., `jpg`, `png`, `webp`). (Default: original format is kept).
-- `-q, --jpeg-quality`: JPEG quality for JPG output (1-100) (Default: `95`).
-- `--webp-quality`: Quality for WEBP output (1-100) (Default: `80`).
-- `--strip-exif`: Remove EXIF data from output images (Default: False, EXIF is preserved).
-- `--yunet-model-path`: Path to the YuNet ONNX model file. (Default: `models/face_detection_yunet_2023mar.onnx`, downloaded if missing).
+- `--overwrite`: Overwrite existing output files (Default: False).
 - `-v, --verbose`: Enable detailed (DEBUG level) logging for the crop operation (Default: False).
+- `-m, --method`: Method to select main subject (`largest`, `center`). (Default: `largest`).
+- `--ref, --reference`: Reference point for composition (`eye`, `box`). (Default: `box`).
+- `-c, --confidence`: Min face detection confidence (Default: `0.6`).
+- `-n, --nms`: Face detection NMS threshold (Default: `0.3`).
+- `--min-face-width`: Min face width in pixels (Default: `30`).
+- `--min-face-height`: Min face height in pixels (Default: `30`).
+- `-r, --ratio`: Target crop aspect ratio (e.g., '16:9', '1.0', 'None') (Default: `None`).
+- `--rule`: Composition rule(s) (`thirds`, `golden`, `both`). (Default: `both`).
+- `-p, --padding-percent`: Padding percentage around crop (%) (Default: `5.0`).
+- `--yunet-model-path`: Path to the YuNet ONNX model file. If not specified, it defaults to `models/face_detection_yunet_2023mar.onnx` and will be downloaded if missing.
 
 Examples for `crop`:
 
-- Crop a single image `./input/image.jpg` to 16:9 ratio using rule of thirds:
+- Crop an image using default settings:
+
   ```bash
-  python crop.py ./input/image.jpg -o ./output -r 16:9 --rule thirds
+  python crop.py ./input/sample.jpg
   ```
-- Crop all images in `./input`, selecting main subject by proximity to center, using bounding box reference, 1:1 ratio, and both rules:
+
+- Crop all images in a directory, saving to `./cropped_images`, using the 'thirds' rule and a 16:9 aspect ratio:
+
   ```bash
-  python crop.py ./input -o ./output -r 1:1 -m center --ref box --rule both
+  python crop.py ./input -o ./cropped_images --rule thirds --ratio 16:9
   ```
-- Perform a dry run for cropping images in `./input`:
+
+- Crop an image, focusing on the 'eye' as reference, with 10% padding and overwriting existing files:
+
   ```bash
-  python crop.py ./input -o ./output --dry-run
+  python crop.py ./input/sample.png --reference eye --padding-percent 10 --overwrite
   ```
 
 ---
 
-## OCR (Optical Character Recognition)
+## Optical Character Recognition (OCR)
 
-The `ocr.py` script extracts text from images using PaddleOCR and applies heuristics to label common Korean document fields.
-
-- Text Extraction: Utilizes PaddleOCR for robust text detection and recognition in Korean and other languages.
-- Heuristic Labeling: Identifies and categorizes extracted text into predefined labels such as name, address, document title, RRN (Resident Registration Number), issue date, and issuer.
-- Flexible Input: Processes single image files or all supported image files within a directory.
-- Customizable Models: Allows specifying paths to PaddleOCR detection, recognition, and classification models.
+The `ocr.py` script uses PaddleOCR to extract text from images. It can process single image files or multiple image files within a directory and supports multiprocessing for efficient batch processing of large numbers of images.
 
 Syntax:
 
@@ -221,36 +206,37 @@ python ocr.py <input_path> [options]
 
 Key Options for `ocr`:
 
-- `input_path`: Path to the image file or directory to process.
-- `--lang`: Language for OCR (Default: `korean`).
-- `--rec_model_dir`: Path to PaddleOCR recognition model directory (Default: `./models/ko_PP-OCRv3_rec_infer`).
-- `--det_model_dir`: Path to PaddleOCR detection model directory (Default: `./models/ch_PP-OCRv3_det_infer`).
-- `--cls_model_dir`: Path to PaddleOCR classification model directory (Default: `./models/ch_ppocr_mobile_v2.0_cls_infer`).
-- `--use_gpu`: Use GPU for OCR (Default: False). Requires `paddlepaddle-gpu` and a compatible CUDA environment.
-- `--show_log`: Show PaddleOCR internal logs (Default: False).
+- `input_path`: (Required) Path to the image file or directory to process.
+- `--lang`: OCR language (default: `korean`). Refer to PaddleOCR documentation for supported languages.
+- `--rec_model_dir`: Path to the recognition model directory (default: `./models/ko_PP-OCRv3_rec_infer`).
+- `--det_model_dir`: Path to the detection model directory (default: `./models/ch_PP-OCRv3_det_infer`).
+- `--cls_model_dir`: Path to the direction classification model directory (default: `./models/ch_ppocr_mobile_v2.0_cls_infer`).
+- `--use_gpu`: Whether to use GPU for OCR processing (default: `False`).
+- `--rec_char_dict_path`: Path to recognition character dictionary (default: `None`, uses PaddleOCR default).
+- `--rec_batch_num`: Recognition batch size (default: `6`).
+- `--det_db_thresh`: Detection DB threshold (default: `0.4`).
+- `--det_db_box_thresh`: Detection DB box threshold (default: `0.6`).
+- `--det_db_unclip_ratio`: Detection DB unclip ratio (default: `1.8`).
+- `--drop_score`: Drop score for text detection (default: `0.6`).
+- `--cls_thresh`: Classification threshold (default: `0.9`).
+- `--use_angle_cls`: Whether to use angle classification (default: `False`).
+- `--use_space_char`: Whether to use space character (default: `True`).
+- `--use_dilation`: Whether to use dilation on text regions (default: `True`).
+- `--show_log`: Whether to display PaddleOCR's internal logs (default: `False`).
 
 Examples for `ocr`:
 
-- Extract and label text from a single image `./input/document.png`:
+- Extract text from a single image file:
+
   ```bash
-  python ocr.py ./input/document.png
-  ```
-- Process all images in `./input_docs` directory using GPU and a custom Korean recognition model:
-  ```bash
-  python ocr.py ./input_docs --use_gpu --rec_model_dir /path/to/my_korean_rec_model
+  python ocr.py ./input/sample.png
   ```
 
-The output will display extracted fields like:
-```
---- Extraction Results for 'sample_id_card.jpg' ---
-"문서 제목": 주민등록증
-"이름": 홍길동
-"주소": 서울특별시 종로구 세종대로 123 (세종로)
-"주민등록번호": 123456-1234567
-"발급일": 2023.05.10
-"발급기관": 서울특별시 종로구청장
-```
-*(Note: The accuracy and completeness of labeled fields depend on image quality, the OCR model's performance, and the heuristics applied.)*
+- Extract Korean text from all images in the `input_images` directory (using GPU and specifying a custom Korean recognition model):
+
+  ```bash
+  python ocr.py ./input_images --lang korean --use_gpu --rec_model_dir ./models/my_custom_korean_ocr_model
+  ```
 
 ---
 
@@ -261,6 +247,7 @@ If you encounter issues while using the toolkit, refer to the following common p
 ### Missing Libraries
 
 Ensure all dependencies are installed:
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -269,10 +256,9 @@ pip install -r requirements.txt
 
 - **YuNet Model (for `crop.py` script)**: The `crop.py` script will automatically attempt to download the YuNet model if it is not found in the `models/` directory. Ensure you have an active internet connection during the first run or if the model is missing.
 - **PaddleOCR Models (for `ocr.py` script)**: The `ocr.py` script requires PaddleOCR models.
-    - Ensure you have downloaded the necessary detection, recognition (e.g., for Korean), and classification models.
-    - By default, the script looks for models in subdirectories under `./models/` (e.g., `./models/ko_PP-OCRv3_rec_infer`). You may need to create these directories and place the model files there.
-    - You can specify custom model paths using options like `--rec_model_dir`, `--det_model_dir`, and `--cls_model_dir`.
-    - If using GPU (`--use_gpu`), ensure `paddlepaddle-gpu` is installed and your CUDA environment is correctly configured.
+  - Ensure you have downloaded the necessary detection, recognition (e.g., for Korean), and classification models.
+  - By default, the script looks for models in subdirectories under `./models/` (e.g., `./models/ko_PP-OCRv3_rec_infer`). You may need to create these directories and place the model files there, or specify custom model paths using options like `--rec_model_dir`, `--det_model_dir`, and `--cls_model_dir`.
+  - If using GPU (`--use_gpu`), ensure `paddlepaddle-gpu` is installed and your CUDA environment is correctly configured.
 
 ### Image Not Processed
 

@@ -9,7 +9,6 @@ from paddleocr import PaddleOCR
 import argparse
 import multiprocessing
 from tqdm import tqdm
-from functools import partial
 
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(processName)s: %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
@@ -67,11 +66,7 @@ def extract_text_items_with_paddleocr(image_path_arg, paddleocr_args):
         return []
 
 def apply_labeling_heuristics(items):
-    labeled_items = []
-
-    for item_dict in items:
-        labeled_items.append(item_dict.copy())
-
+    labeled_items = [item.copy() for item in items]
 
     address_keywords_hardcoded = [
         "특별시", "광역시", "도", "시", "군", "구", "읍", "면", "동", "리",
@@ -215,9 +210,11 @@ def merge_and_format_items(labeled_items):
             i = j
         elif current_label == "issue_date":
             date_components = []
+            original_date_items = []
             j = i
             while j < n and labeled_items[j]['label'] == "issue_date" and len(date_components) < 3:
                 date_components.append(labeled_items[j]['text'])
+                original_date_items.append(labeled_items[j])
                 j += 1
 
             if len(date_components) == 3 and \
@@ -228,13 +225,8 @@ def merge_and_format_items(labeled_items):
                 temp_merged_list.append({'text': merged_text, 'label': "issue_date"})
                 i = j
             else:
-                if date_components:
-                     temp_merged_list.append({'text': date_components[0], 'label': "issue_date"})
-                elif item['label'] == "issue_date":
-                     temp_merged_list.append({'text': item['text'], 'label': "O"})
-                else:
-                     temp_merged_list.append(item)
-                i = j if j > i else i + 1
+                temp_merged_list.extend(original_date_items)
+                i = j
         elif current_label == "issuer":
             issuer_parts = [current_text]
             j = i + 1

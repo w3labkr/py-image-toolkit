@@ -28,13 +28,6 @@ FILTER_NAMES = {
     "nearest": "NEAREST (Lowest quality)"
 }
 
-SUPPORTED_OUTPUT_FORMATS = {
-    "original": "Keep Original",
-    "png": "PNG",
-    "jpg": "JPG",
-    "webp": "WEBP"
-}
-
 try:
     _PIL_RESAMPLE_FILTERS = {
         "lanczos": Image.Resampling.LANCZOS,
@@ -103,55 +96,10 @@ def resize_image_fixed_size(img: Image.Image, target_width: int, target_height: 
         logger.warning(f"Error during fixed size resize (({original_width},{original_height}) -> ({target_width},{target_height})): {e}. Using original image.")
         return img
 
-def prepare_image_for_save(img: Image.Image, output_format_str: Optional[str]) -> Image.Image:
-    save_img = img
-    original_mode = img.mode
-
-    if output_format_str:
-        output_format_upper = output_format_str.upper()
-    else:
-        return img
-
-    if output_format_upper == 'JPG':
-        if img.mode in ('RGBA', 'LA', 'P'):
-            logger.debug(f"Image mode is '{img.mode}'. Converting to 'RGB' for JPG output.")
-            background = Image.new("RGB", img.size, (255, 255, 255))
-            if img.mode == 'P':
-                try:
-                    mask = img.convert("RGBA").split()[3]
-                    background.paste(img, mask=mask)
-                except IndexError:
-                    img_rgb = img.convert("RGB")
-                    background.paste(img_rgb)
-            else:
-                background.paste(img, mask=img.split()[3] if img.mode == 'RGBA' else img.split()[1])
-            save_img = background
-        elif img.mode != 'RGB':
-            logger.debug(f"Image mode is '{img.mode}'. Converting to 'RGB' for JPG output.")
-            save_img = img.convert('RGB')
-    elif output_format_upper == 'WEBP':
-         if img.mode == 'P':
-              save_img = img.convert("RGBA") if 'transparency' in img.info else img.convert("RGB")
-              logger.debug(f"Converted 'P' (Palette) mode to '{save_img.mode}' for WEBP saving.")
-
-    if save_img.mode != original_mode:
-        logger.debug(f"Image mode converted: '{original_mode}' -> '{save_img.mode}' (Target output format: {output_format_str or 'Original'})")
-    return save_img
-
 def process_single_image_file(input_path: str, relative_path: str, config: dict) -> Tuple[bool, Optional[str], str, str]:
     base_name, original_ext = os.path.splitext(os.path.basename(input_path))
-    output_format_str = config['output_format_options']['format_str']
     resize_opts = config['resize_options']
     logger.debug(f"Processing: '{relative_path}'")
-
-    output_ext_map = {'jpg': '.jpg', 'webp': '.webp', 'png': '.png'}
-    if output_format_str.lower() == 'original':
-        final_output_ext = original_ext
-    else:
-        final_output_ext = output_ext_map.get(output_format_str.lower())
-        if final_output_ext is None:
-            logger.warning(f"Unknown output format '{output_format_str}', using original extension '{original_ext}' for filename.")
-            final_output_ext = original_ext
 
     output_relative_dir = os.path.dirname(relative_path)
     output_dir_for_file = os.path.join(config['absolute_output_dir'], output_relative_dir)
@@ -165,19 +113,15 @@ def process_single_image_file(input_path: str, relative_path: str, config: dict)
               logger.error(error_msg)
               return False, error_msg, input_path, relative_path
 
-    output_path = os.path.join(output_dir_for_file, f"{base_name}{final_output_ext}")
+    output_path = os.path.join(output_dir_for_file, f"{base_name}{original_ext}")
 
     if not config['overwrite'] and os.path.exists(output_path):
         logger.info(f"Skipping '{relative_path}' as output file '{output_path}' already exists and overwrite is disabled.")
         return True, "skipped_overwrite", input_path, relative_path
 
-    original_exif_bytes = None
-
     try:
         with Image.open(input_path) as img:
             logger.debug(f"Opened '{relative_path}'. Original size: {img.size}, mode: {img.mode}")
-            if 'exif' in img.info and not config['strip_exif']:
-                original_exif_bytes = img.info['exif']
 
             processed_img = img
             if resize_opts['mode'] != 'none':
@@ -190,28 +134,7 @@ def process_single_image_file(input_path: str, relative_path: str, config: dict)
                         img, resize_opts['width'], resize_opts['height'], resize_opts['filter_obj']
                     )
 
-            save_kwargs = {}
-            if output_format_str.lower() != 'original':
-                processed_img = prepare_image_for_save(processed_img, output_format_str)
-                current_output_format = output_format_str.upper()
-
-                if current_output_format == 'JPEG' or current_output_format == 'JPG':
-                    save_kwargs['quality'] = config['output_format_options'].get('quality', 95)
-                    save_kwargs['optimize'] = True
-                    save_kwargs['progressive'] = True
-                elif current_output_format == 'WEBP':
-                    save_kwargs['quality'] = config['output_format_options'].get('quality', 80)
-                    save_kwargs['lossless'] = config['output_format_options'].get('lossless', False)
-                elif current_output_format == 'PNG':
-                    save_kwargs['optimize'] = True
-
-            if not config['strip_exif'] and original_exif_bytes:
-                save_kwargs['exif'] = original_exif_bytes
-
-            if output_format_str.lower() == 'original':
-                processed_img.save(output_path, **save_kwargs)
-            else:
-                processed_img.save(output_path, format=output_format_str.upper(), **save_kwargs)
+            processed_img.save(output_path)
 
             logger.debug(f"Successfully processed and saved '{relative_path}' to '{output_path}'")
             return True, None, input_path, relative_path
@@ -285,36 +208,13 @@ def scan_for_image_files(config: dict) -> Tuple[list[Tuple[str, str]], list[str]
             logger.debug(f"Skipping '{relative_path}': No file extension.")
             continue
 
-        should_process_based_on_extension = False
-        
-        # Ensure that we iterate over an empty list if 'include_extensions' is None
-        include_extensions_val = config.get('include_extensions')
-        normalized_include_extensions = {f".{ext.lower().lstrip('.')}" for ext in (include_extensions_val if include_extensions_val is not None else [])}
-        
-        # Ensure that we iterate over an empty list if 'exclude_extensions' is None
-        exclude_extensions_val = config.get('exclude_extensions')
-        normalized_exclude_extensions = {f".{ext.lower().lstrip('.')}" for ext in (exclude_extensions_val if exclude_extensions_val is not None else [])}
-
-        if normalized_include_extensions:
-            if file_ext in normalized_include_extensions:
-                should_process_based_on_extension = True
-        elif file_ext in SUPPORTED_EXTENSIONS:
-            should_process_based_on_extension = True
-        else:
-            reason = f"Skipped '{relative_path}': Extension '{file_ext}' is not in the default supported list and --include-extensions not used."
-            skipped_scan_items_reasons.append(reason)
-            logger.debug(reason)
-            continue
-
-        if should_process_based_on_extension and normalized_exclude_extensions and file_ext in normalized_exclude_extensions:
-            reason = f"Skipped '{relative_path}': Extension '{file_ext}' is in --exclude-extensions list."
-            skipped_scan_items_reasons.append(reason)
-            logger.debug(reason)
-            should_process_based_on_extension = False
-
-        if should_process_based_on_extension:
+        if file_ext in SUPPORTED_EXTENSIONS:
             files_to_process.append((input_path, relative_path))
             logger.debug(f"Queued '{relative_path}' for processing.")
+        else:
+            reason = f"Skipped '{relative_path}': Extension '{file_ext}' is not in the supported list."
+            skipped_scan_items_reasons.append(reason)
+            logger.debug(reason)
 
     return files_to_process, skipped_scan_items_reasons
 
@@ -396,24 +296,14 @@ def main():
         description="Py Image Toolkit CLI - Image Resizer",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        dest="verbose_global",
-        help="Enable verbose (DEBUG level) logging for detailed output across all commands."
-    )
-
     parser.add_argument("input_dir", nargs='?', default='input',
                                help="Path to the source image folder or a single image file (default: 'input' in current directory).")
-
     parser.add_argument("-o", "--output-dir", dest='output_dir', default='output',
                                help="Path to save processed images (default: 'output' in current directory).")
-
-    parser.add_argument("-f", "--output-format",
-                               default='original',
-                               choices=SUPPORTED_OUTPUT_FORMATS.keys(),
-                               help="Target output file format (default: original):\n" +
-                                    "\n".join([f"  {k}: {v}" for k, v in SUPPORTED_OUTPUT_FORMATS.items()]))
+    parser.add_argument("--overwrite", dest='overwrite', action='store_true', default=False,
+                                 help="Overwrite existing output files. If not specified, existing files will be skipped.")
+    parser.add_argument("-v", "--verbose", action="store_true", dest="verbose_global", 
+                        help="Enable verbose (DEBUG level) logging for detailed output across all commands.")
 
     parser.add_argument("-r", "--ratio",
                              choices=['aspect_ratio', 'fixed', 'none'],
@@ -421,7 +311,7 @@ def main():
                              help="Resize ratio behavior (default: aspect_ratio):\n"
                                   "  aspect_ratio: Maintain aspect ratio to fit target Width/Height.\n"
                                   "  fixed: Force resize to target Width x Height (may distort).\n"
-                                  "  none: No resizing (only format conversion/EXIF handling).")
+                                  "  none: No resizing.")
 
     parser.add_argument("-w", "--width", type=int, default=0,
                               help="Target width in pixels for resizing (used if --ratio is not 'none').")
@@ -433,29 +323,6 @@ def main():
                               help="Resampling filter for resizing (default: lanczos):\n" +
                                    "\n".join([f"  {k}: {v}" for k, v in FILTER_NAMES.items()]))
 
-    parser.add_argument("-q", "--jpeg-quality", type=int, dest='jpg_quality',
-                                default=95,
-                                help="Quality for JPG output (1-100, higher is better). Default: 95")
-    parser.add_argument("--webp-quality", type=int, dest='webp_quality',
-                                default=80,
-                                help="Quality for WEBP output (1-100, higher is better). Default: 80 (for lossy WEBP).")
-    parser.add_argument("--webp-lossless", action="store_true",
-                                help="Use lossless compression for WEBP output. Ignored if output format is not WEBP.")
-    parser.add_argument("--strip-exif", action="store_true",
-                                help="Remove all EXIF metadata from images.")
-
-    parser.add_argument("--overwrite", dest='overwrite', action='store_true', default=False,
-                                 help="Overwrite existing output files. If not specified, existing files will be skipped.")
-
-    parser.add_argument("--include-extensions", nargs='+', metavar='EXT',
-                                help="Process only files with these extensions (e.g., jpg png).\n"
-                                     "Replaces the default list. Provide without dots (e.g., 'jpg').\n"
-                                     "Cannot be used with --exclude-extensions.")
-    parser.add_argument("--exclude-extensions", nargs='+', metavar='EXT',
-                                help="Exclude files with these extensions (e.g., gif tiff).\n"
-                                     "Applied AFTER default/include list. Provide without dots.\n"
-                                     "Cannot be used with --include-extensions.")
-
     try:
         args = parser.parse_args()
 
@@ -464,29 +331,19 @@ def main():
             log_handler.setLevel(logging.DEBUG)
             logger.debug("Verbose logging enabled.")
 
-        config = {k: v for k, v in vars(args).items() if k != 'parser_ref'}
-
-        config['absolute_input_dir'] = os.path.abspath(args.input_dir)
-        config['absolute_output_dir'] = os.path.abspath(args.output_dir)
-
-        config['resize_options'] = {
-            'mode': args.ratio,
-            'width': args.width,
-            'height': args.height,
-            'filter_str': args.filter,
-            'filter_obj': _PIL_RESAMPLE_FILTERS[args.filter]
+        config = {
+            'verbose_global': args.verbose_global,
+            'overwrite': args.overwrite,
+            'absolute_input_dir': os.path.abspath(args.input_dir),
+            'absolute_output_dir': os.path.abspath(args.output_dir),
+            'resize_options': {
+                'mode': args.ratio,
+                'width': args.width,
+                'height': args.height,
+                'filter_str': args.filter,
+                'filter_obj': _PIL_RESAMPLE_FILTERS[args.filter]
+            }
         }
-
-        config['output_format_options'] = {
-            'format_str': args.output_format
-        }
-        if args.output_format == 'jpg':
-            config['output_format_options']['quality'] = args.jpg_quality
-        elif args.output_format == 'webp':
-            config['output_format_options'].update({
-                'quality': args.webp_quality,
-                'lossless': args.webp_lossless
-            })
 
         execute_resize_operation(config)
             
