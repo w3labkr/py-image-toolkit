@@ -8,7 +8,6 @@ import math
 import argparse
 import time
 import sys
-from tqdm import tqdm
 import requests
 
 YUNET_MODEL_FILENAME: str = "face_detection_yunet_2023mar.onnx"
@@ -363,24 +362,7 @@ def process_image(image_path: str, global_settings: argparse.Namespace, detector
     status['message'] += f" ({processing_time:.2f}s)."
     return status
 
-def process_image_wrapper(args_tuple: Tuple[str, argparse.Namespace]) -> Dict[str, Any]:
-    image_path, settings = args_tuple; filename = os.path.basename(image_path); detector = None
-    try:
-        if not os.path.exists(settings.yunet_model_path):
-             if not download_model(YUNET_MODEL_URL, settings.yunet_model_path, False):
-                 print(f"Worker failed to download model: {settings.yunet_model_path}")
-                 return {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"Worker failed to download model: {settings.yunet_model_path}"}
 
-        detector = cv2.FaceDetectorYN.create(settings.yunet_model_path, "", (0, 0))
-        detector.setScoreThreshold(settings.confidence); detector.setNMSThreshold(settings.nms)
-        return process_image(image_path, settings, detector)
-
-    except cv2.error as e:
-        print(f"{filename}: OpenCV error in worker: {e}")
-        return {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"OpenCV Error: {e}"}
-    except Exception as e:
-        print(f"{filename}: Critical error in worker: {e}")
-        return {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"Critical error in worker: {e}"}
 
 def execute_crop_operation(settings: argparse.Namespace) -> Dict[str, int]:
     if settings.yunet_model_path is None:
@@ -398,16 +380,14 @@ def execute_crop_operation(settings: argparse.Namespace) -> Dict[str, int]:
         sys.exit(2)
 
     input_path = settings.input_path
-    skipped_scan_items_details = []
-    
     summary = {'processed': 0, 'saved': 0, 'skipped': 0, 'failed': 0}
 
     if os.path.isfile(input_path):
         if not input_path.lower().endswith(SUPPORTED_EXTENSIONS):
-            print(f"Single file '{input_path}' is not a supported image type. Skipping.")
+            print(f"File '{input_path}' is not a supported image type. Skipping.")
             return summary 
 
-        print(f"Starting single file processing: {os.path.abspath(input_path)}")
+        print(f"Processing image file: {os.path.abspath(input_path)}")
         summary['processed'] = 1
         detector = None
         try:
@@ -424,139 +404,52 @@ def execute_crop_operation(settings: argparse.Namespace) -> Dict[str, int]:
             summary['skipped'] = skipped_count
 
             if is_success and saved_count > 0:
-                 print(f"Processed '{input_path}': {message}")
+                print(f"Processed '{input_path}': {message}")
             elif not is_success and saved_count == 0 and skipped_count > 0:
-                 print(f"Skipped '{input_path}': {message}")
+                print(f"Skipped '{input_path}': {message}")
             else:
-                 print(f"Failed '{input_path}': {message}")
-                 summary['failed'] = 1
+                print(f"Failed '{input_path}': {message}")
+                summary['failed'] = 1
                  
         except cv2.error as e:
-            print(f"Failed to load face detection model (single file): {e}")
+            print(f"Failed to load face detection model: {e}")
             summary['failed'] = 1
         except Exception as e:
-            print(f"Error during single file processing: {e}")
+            print(f"Error during image processing: {e}")
             summary['failed'] = 1
-
-    elif os.path.isdir(input_path):
-        image_files = []
-        try:
-            all_items = os.listdir(input_path)
-            for item_name in all_items:
-                item_path = os.path.join(input_path, item_name)
-                if os.path.isfile(item_path) and item_name.lower().endswith(SUPPORTED_EXTENSIONS):
-                    image_files.append(item_path)
-                elif os.path.isfile(item_path):
-                    skipped_scan_items_details.append(f"Skipped non-image file: {item_name}")
-
-        except OSError as e:
-            print(f"Directory access error: '{os.path.abspath(input_path)}': {e}")
-            sys.exit(2)
-
-        if not image_files:
-            print(f"No supported image files ({', '.join(SUPPORTED_EXTENSIONS)}) found in '{os.path.abspath(input_path)}'.")
-            if skipped_scan_items_details:
-                 print("Other items found during scan (and skipped):")
-                 for detail in skipped_scan_items_details:
-                     print(f"  - {detail}")
-            return summary 
-
-        summary['processed'] = len(image_files)
-        detector_init_failed_sequentially = False
-        results_list = []
-        tasks = [(img_path, settings) for img_path in image_files]
-        
-        tqdm_extra_kwargs = {
-            'bar_format': '{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]',
-            'ncols': 80
-        }
-
-        detector = None
-        try:
-            if not os.path.exists(settings.yunet_model_path):
-                if not download_model(YUNET_MODEL_URL, settings.yunet_model_path, True):
-                    print(f"DNN model file '{settings.yunet_model_path}' is not available or download failed.")
-                    detector_init_failed_sequentially = True
-            if not detector_init_failed_sequentially:
-                detector = cv2.FaceDetectorYN.create(settings.yunet_model_path, "", (0,0))
-                detector.setScoreThreshold(settings.confidence)
-                detector.setNMSThreshold(settings.nms)
-        except cv2.error as e:
-            print(f"Failed to load face detection model for processing: {e}")
-            detector_init_failed_sequentially = True
-        except Exception as e:
-            print(f"Unexpected error initializing detector: {e}")
-            detector_init_failed_sequentially = True
-
-        if detector_init_failed_sequentially:
-            print("Cannot proceed with processing due to detector initialization failure.")
-            for img_path, _ in tasks:
-                results_list.append({'filename': os.path.basename(img_path), 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': "Detector initialization failed"})
-            summary['failed'] = len(image_files)
-        else:
-            for task_args in tqdm(tasks, desc="Processing images", unit="image", **tqdm_extra_kwargs):
-                img_path, task_settings = task_args
-                try:
-                    res = process_image(img_path, task_settings, detector)
-                    results_list.append(res)
-                except Exception as exc:
-                    print(f'{os.path.basename(img_path)} generated an exception during processing: {exc}')
-                    results_list.append({'filename': os.path.basename(img_path), 'success': False, 'saved_files': 0, 'skipped_overwrite_rules':0, 'message': f"Exception during processing: {exc}"})
-
-        current_errors = 0
-        total_files_saved = 0
-        total_files_skipped_overwrite = 0
-
-        for res_idx, res in enumerate(results_list):
-            filename = res.get('filename', f"UnknownFile_{res_idx}")
-            saved_count = res.get('saved_files', 0)
-            skipped_count = res.get('skipped_overwrite_rules', 0)
-            is_success = res.get('success', False)
-            message = res.get('message', "No message provided.")
-            
-            total_files_saved += saved_count
-            total_files_skipped_overwrite += skipped_count
-
-            if not is_success and saved_count == 0 and skipped_count == 0:
-                current_errors += 1
-                    
-        summary['saved'] = total_files_saved
-        summary['skipped'] = total_files_skipped_overwrite 
-        summary['failed'] = current_errors
-
     else:
         if not os.path.exists(input_path):
-             err_msg = f"Input path not found: {os.path.abspath(input_path)}"
-             print(err_msg)
-             sys.exit(2)
+            err_msg = f"Input path not found: {os.path.abspath(input_path)}"
+            print(err_msg)
+            sys.exit(2)
         else:
-             err_msg = f"Input path is neither a file nor a directory: {os.path.abspath(input_path)}"
-             print(err_msg)
-             sys.exit(2)
+            err_msg = f"Input path is not a file: {os.path.abspath(input_path)}"
+            print(err_msg)
+            sys.exit(2)
 
     return summary
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Batch image cropping using face detection (YuNet) and composition rules (thirds, golden ratio).",
+        description="Image cropping using face detection (YuNet) and composition rules (thirds, golden ratio).",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument("input_path", help="Path to the image file or directory to process.")
-    parser.add_argument("-o", "--output_dir", default="output", help="Directory to save results (Default: 'output').")
-    parser.add_argument("--overwrite", action="store_true", default=False, help="Overwrite existing output files (Default: False).")
+    parser.add_argument("input_path", help="Path to the image file to process.")
+    parser.add_argument("-o", "--output_dir", default="output", help="Directory to save results. Default: 'output'.")
+    parser.add_argument("--overwrite", action="store_true", default=False, help="Overwrite existing output files. Default: False.")
 
-    parser.add_argument("-m", "--method", choices=['largest', 'center'], default='largest', help="Method to select main subject (Default: largest).")
-    parser.add_argument("--ref", "--reference", dest="reference", choices=['eye', 'box'], default='box', help="Reference point for composition (Default: box).")
-    parser.add_argument("-c", "--confidence", type=float, default=0.6, help="Min face detection confidence (Default: 0.6).")
-    parser.add_argument("-n", "--nms", type=float, default=0.3, help="Face detection NMS threshold (Default: 0.3).")
-    parser.add_argument("--min-face-width", type=int, default=30, help="Min face width in pixels (Default: 30).")
-    parser.add_argument("--min-face-height", type=int, default=30, help="Min face height in pixels (Default: 30).")
+    parser.add_argument("-m", "--method", choices=['largest', 'center'], default='largest', help="Method to select main subject. Default: largest.")
+    parser.add_argument("--ref", "--reference", dest="reference", choices=['eye', 'box'], default='box', help="Reference point for composition. Default: box.")
+    parser.add_argument("-c", "--confidence", type=float, default=0.6, help="Min face detection confidence. Default: 0.6.")
+    parser.add_argument("-n", "--nms", type=float, default=0.3, help="Face detection NMS threshold. Default: 0.3.")
+    parser.add_argument("--min-face-width", type=int, default=30, help="Min face width in pixels. Default: 30.")
+    parser.add_argument("--min-face-height", type=int, default=30, help="Min face height in pixels. Default: 30.")
 
-    parser.add_argument("--ratio", type=str, default=None, help="Target crop aspect ratio (e.g., '16:9', '1.0', 'None') (Default: None).")
-    parser.add_argument("--rule", choices=['thirds', 'golden', 'both'], default='both', help="Composition rule(s) (Default: both).")
-    parser.add_argument("--padding-percent", type=float, default=5.0, help="Padding percentage around crop (%) (Default: 5.0).")
+    parser.add_argument("--ratio", type=str, default=None, help="Target crop aspect ratio (e.g., '16:9', '1.0', 'None'). Default: None.")
+    parser.add_argument("--rule", choices=['thirds', 'golden', 'both'], default='both', help="Composition rule to use. Default: both.")
+    parser.add_argument("--padding-percent", type=float, default=5.0, help="Padding percentage around crop. Default: 5.0.")
     
-    parser.add_argument("--yunet-model-path", type=str, default=None, help=f"Path to the YuNet ONNX model file. If not specified, it defaults to '{MODEL_DIR_NAME}/{YUNET_MODEL_FILENAME}' and will be downloaded if missing.")
+    parser.add_argument("--yunet-model-path", type=str, default=None, help="Path to the YuNet ONNX model file. If not specified, it defaults to models/face_detection_yunet_2023mar.onnx and will be downloaded if missing.")
 
     args = parser.parse_args()
 
@@ -569,23 +462,20 @@ def main():
         total_failed = summary.get('failed', 0) 
 
         print(f"===== Image Cropping Script Finished =====")
-        print(f"Summary: Images Processed={total_processed}, Outputs Saved={total_saved}, Outputs Skipped(Overwrite)={total_skipped_overwrite}, Images Failed={total_failed}")
+        print(f"Summary: Image Processed={total_processed}, Outputs Saved={total_saved}, Outputs Skipped(Overwrite)={total_skipped_overwrite}, Failed={total_failed}")
 
         if total_failed > 0:
-            print(f"Completed with {total_failed} image(s) failing processing.")
+            print(f"Completed with failure.")
             sys.exit(1)
-        elif total_processed == 0 and not os.path.isfile(args.input_path):
-             print("No images were processed.")
-             sys.exit(0)
         elif total_saved > 0:
-             print(f"Completed successfully (saved {total_saved} output files).")
-             sys.exit(0)
+            print(f"Completed successfully (saved {total_saved} output files).")
+            sys.exit(0)
         elif total_skipped_overwrite > 0:
-             print(f"Completed, but no new output files were saved due to overwrite policy (skipped {total_skipped_overwrite} outputs).")
-             sys.exit(0)
+            print(f"Completed, but no new output files were saved due to overwrite policy (skipped {total_skipped_overwrite} outputs).")
+            sys.exit(0)
         else:
-             print("Completed, but no output files were generated (check logs for details).")
-             sys.exit(0)
+            print("Completed, but no output files were generated (check logs for details).")
+            sys.exit(0)
             
     except Exception as e:
         print(f"An error occurred: {e}")

@@ -2,11 +2,8 @@
 import os
 import sys
 import re
-from PIL import Image
-import numpy as np
 from paddleocr import PaddleOCR
 import argparse
-from tqdm import tqdm
 
 LABELS = {
     "O": ["기타"], # Other: 특별한 의미가 없는 기타 텍스트 또는 배경 요소
@@ -283,54 +280,22 @@ def process_input_path(input_path_to_process, paddleocr_args):
         print(f"The specified path '{input_path_to_process}' cannot be found.")
         sys.exit(1)
 
-    image_files_to_process = []
     if os.path.isfile(input_path_to_process):
         if input_path_to_process.lower().endswith(SUPPORTED_EXTENSIONS):
-            image_files_to_process.append(input_path_to_process)
+            result_string = process_image_file(input_path_to_process, paddleocr_args)
+            if result_string:
+                print(result_string)
         else:
             print(f"File '{input_path_to_process}' is not a supported image file. Supported extensions: {SUPPORTED_EXTENSIONS}")
             sys.exit(1)
-    elif os.path.isdir(input_path_to_process):
-        for filename in os.listdir(input_path_to_process):
-            file_path = os.path.join(input_path_to_process, filename)
-            if os.path.isfile(file_path) and filename.lower().endswith(SUPPORTED_EXTENSIONS):
-                image_files_to_process.append(file_path)
-        if not image_files_to_process:
-            print(f"No supported image files found in directory '{input_path_to_process}'.")
-            return
     else:
-        print(f"Path '{input_path_to_process}' is not a valid file or directory.")
+        print(f"Path '{input_path_to_process}' is not a valid file. Directory processing is not supported.")
         sys.exit(1)
-
-    if not image_files_to_process:
-        return
-
-    results = []
-    
-    if len(image_files_to_process) == 1:
-        result_string = process_image_file(image_files_to_process[0], paddleocr_args)
-        if result_string:
-            results.append(result_string)
-    else:
-        try:
-            for img_path in tqdm(image_files_to_process, desc="Processing images"):
-                result_string = process_image_file(img_path, paddleocr_args)
-                if result_string:
-                    results.append(result_string)
-        except Exception as e:
-            print(f"Unexpected error occurred while processing images: {e}")
-            if paddleocr_args.show_log:
-                import traceback
-                traceback.print_exc()
-            results = []
-
-    for res_str in results:
-        print(res_str)
 
 if __name__ == "__main__":
 
-    parser = argparse.ArgumentParser(description="Extracts text from images using PaddleOCR and applies labeling heuristics. Can process a single image file or all image files in a directory.")
-    parser.add_argument("input_path", help="Path to the image file or directory to process.")
+    parser = argparse.ArgumentParser(description="Extracts text from images using PaddleOCR and applies labeling heuristics. Processes a single image file.")
+    parser.add_argument("input_path", help="Path to the image file to process.")
 
     # PaddleOCR arguments
     paddleocr_group = parser.add_argument_group('PaddleOCR Arguments', 'Arguments for configuring PaddleOCR')

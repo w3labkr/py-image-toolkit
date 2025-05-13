@@ -1,4 +1,3 @@
-<!-- filepath: /Users/user/Workspace/w3labkr/github.com/py-image-toolkit/README.md -->
 # py-image-toolkit
 
 `py-image-toolkit` is a Python-based toolkit for image processing. It provides a command-line interface (CLI) through individual scripts (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) for resizing images, performing automatic cropping based on face detection and composition rules, extracting text using Optical Character Recognition (OCR), and optimizing images. It's designed to be fast, efficient, and easy to use.
@@ -92,31 +91,28 @@ pyenv versions
 
 ## General CLI Options
 
-Each script (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) is run directly and has its own set of options. Common options include:
-
-- `-v, --verbose`: `resize.py` and `crop.py` support this flag to enable detailed (DEBUG level) logging.
+Each script (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) is run directly and has its own set of options.
 - `ocr.py` provides CLI options for PaddleOCR configuration, and `--show_log` can be used to display PaddleOCR's internal logs. See the `Optical Character Recognition (OCR)` section below for details.
 
 ---
 
 ## Image Resizing
 
-The `resize.py` script processes images from an input directory or a single image file by resizing them. It preserves EXIF metadata where possible (this is the default behavior of the underlying Pillow library) and saves images in their original format. It employs multiprocessing to speed up batch processing and offers detailed logging.
+The `resize.py` script processes a single image file by resizing it. It preserves EXIF metadata where possible (this is the default behavior of the underlying Pillow library) and saves images in their original format. It offers detailed logging for errors.
 
 - Aspect Ratio Resizing: Maintains aspect ratio while resizing.
 - Fixed Size Resizing: Forces images to fit specific dimensions.
 - EXIF Metadata Preservation: Preserves original EXIF metadata where possible.
-- Recursive Processing: Processes directories and subdirectories.
 
 Syntax:
 
 ```bash
-python resize.py <input_path> [options]
+python resize.py <input_file> [options]
 ```
 
 Key Options for `resize`:
 
-- `input_dir`: Path to the source image folder or a single image file (default: `input`).
+- `input_file`: Path to the source image file.
 - `-o, --output-dir`: Directory to save processed images (default: `output`).
 - `-r, --ratio`: Resize ratio behavior (`aspect_ratio`, `fixed`, `none`). (default: `aspect_ratio`).
   - `aspect_ratio`: Maintain aspect ratio to fit the target size. Requires at least one of `--width` or `--height` to be positive.
@@ -128,39 +124,39 @@ Key Options for `resize`:
 
 Examples for `resize`:
 
-- Resize images in `./input` to a width of 1280px, maintaining aspect ratio:
+- Resize an image `./input/sample.jpg` to a width of 1280px, maintaining aspect ratio:
 
   ```bash
-  python resize.py ./input -w 1280
+  python resize.py ./input/sample.jpg -w 1280
   ```
 
-- Resize images to fixed 720x600 dimensions:
+- Resize an image to fixed 720x600 dimensions:
 
   ```bash
-  python resize.py ./input -o ./output_resized -r fixed -w 720 -H 600
+  python resize.py ./input/sample.jpg -o ./output_resized -r fixed -w 720 -H 600
   ```
 
-- Process images in `./input` without resizing (e.g., to copy to output directory, useful with `--overwrite`):
+- Process an image `./input/sample.jpg` without resizing (e.g., to copy to output directory, useful with `--overwrite`):
 
   ```bash
-  python resize.py ./input -r none --overwrite
+  python resize.py ./input/sample.jpg -r none --overwrite
   ```
 
 ---
 
 ## Image Cropping
 
-The `crop.py` script is designed to detect faces in images and automatically crop them based on composition rules like the rule of thirds or the golden ratio. It identifies subjects in the image, determines the main subject, and then calculates the optimal crop area. It automatically downloads the face detection model if needed.
+The `crop.py` script is designed to detect faces in a single image and automatically crop it based on composition rules like the rule of thirds or the golden ratio. It identifies subjects in the image, determines the main subject, and then calculates the optimal crop area. It automatically downloads the face detection model if needed.
 
 Syntax:
 
 ```bash
-python crop.py <input_path> [options]
+python crop.py <input_file> [options]
 ```
 
 Key Options for `crop`:
 
-- `input_path`: (Required) Path to the image file or directory to process.
+- `input_file`: (Required) Path to the image file to process.
 - `-o, --output_dir`: Directory to save results (Default: `output`).
 - `--overwrite`: Overwrite existing output files (Default: False).
 - `-v, --verbose`: Enable detailed (DEBUG level) logging for the crop operation (Default: False).
@@ -183,10 +179,10 @@ Examples for `crop`:
   python crop.py ./input/sample.jpg
   ```
 
-- Crop all images in a directory, saving to `./cropped_images`, using the 'thirds' rule and a 16:9 aspect ratio:
+- Crop an image, saving to `./cropped_images`, using the 'thirds' rule and a 16:9 aspect ratio:
 
   ```bash
-  python crop.py ./input -o ./cropped_images --rule thirds --ratio 16:9
+  python crop.py ./input/sample.jpg -o ./cropped_images --rule thirds --ratio 16:9
   ```
 
 - Crop an image, focusing on the 'eye' as reference, with 10% padding and overwriting existing files:
@@ -199,56 +195,64 @@ Examples for `crop`:
 
 ## Image Optimization
 
-The `optimize.py` script allows you to compress and optimize images without significant visible quality loss. It supports various formats including JPEG, PNG, WebP, and TIFF, each with format-specific optimizations.
+The `optimize.py` script allows you to compress and optimize a single image without significant visible quality loss. It supports various formats including JPEG, PNG, WebP, and TIFF, each with format-specific optimizations.
 
 Syntax:
 
 ```bash
-python optimize.py <input_path> [options]
+python optimize.py <input_file> [options]
 ```
 
 Key Options for `optimize`:
 
-- `input_path`: Path to the image file or directory to process (default: `input`).
+- `input_file`: Path to the image file to process.
 - `-o, --output-dir`: Directory to save optimized images (default: `output`).
 - `--overwrite`: Overwrite existing files if they already exist in the output directory (Default: False).
 - `--jpg-quality`: JPEG image quality setting (1-100, default: `85`). Lower values produce smaller files but may reduce quality.
+- `--webp-quality`: WebP image quality (1-100, default: `85`, ignored when `--lossless` option is used).
+- `--lossless`: Use lossless compression for WebP (ignores WebP quality setting).
 
 Examples for `optimize`:
 
-- Optimize all images in the `./input` directory with default settings:
+- Optimize an image `./input/sample.jpg` with default settings:
 
   ```bash
-  python optimize.py ./input
+  python optimize.py ./input/sample.jpg
   ```
 
-- Optimize a single image with custom quality (70%) and save to a specific directory:
+- Optimize a single image with custom JPEG quality (70%) and save to a specific directory:
 
   ```bash
   python optimize.py ./input/large_image.jpg -o ./optimized_images --jpg-quality 70
   ```
 
-- Process all images in the `./photos` directory and overwrite any existing files:
+- Optimize a WebP image with lossless compression:
 
   ```bash
-  python optimize.py ./photos -o ./photos_optimized --overwrite
+  python optimize.py ./input/sample.webp -o ./optimized_output --lossless
+  ```
+
+- Process an image `./photos/another.png` and overwrite any existing file:
+
+  ```bash
+  python optimize.py ./photos/another.png -o ./photos_optimized --overwrite
   ```
 
 ---
 
 ## Optical Character Recognition (OCR)
 
-The `ocr.py` script uses PaddleOCR to extract text from images. It can process single image files or multiple image files within a directory and supports multiprocessing for efficient batch processing of large numbers of images.
+The `ocr.py` script uses PaddleOCR to extract text from a single image. It then attempts to identify and label key information such as document title, name, address, resident registration number, issue date, and issuer.
 
 Syntax:
 
 ```bash
-python ocr.py <input_path> [options]
+python ocr.py <input_file> [options]
 ```
 
 Key Options for `ocr`:
 
-- `input_path`: (Required) Path to the image file or directory to process.
+- `input_file`: (Required) Path to the image file to process.
 - `--lang`: OCR language (default: `korean`). Refer to PaddleOCR documentation for supported languages.
 - `--rec_model_dir`: Path to the recognition model directory (default: `./models/ko_PP-OCRv3_rec_infer`).
 - `--det_model_dir`: Path to the detection model directory (default: `./models/ch_PP-OCRv3_det_infer`).
@@ -274,11 +278,13 @@ Examples for `ocr`:
   python ocr.py ./input/sample.png
   ```
 
-- Extract Korean text from all images in the `input_images` directory (using GPU and specifying a custom Korean recognition model):
+- Extract Korean text from an image (using GPU and specifying a custom Korean recognition model):
 
   ```bash
-  python ocr.py ./input_images --lang korean --use_gpu --rec_model_dir ./models/my_custom_korean_ocr_model
+  python ocr.py ./input_images/my_document.jpg --lang korean --use_gpu --rec_model_dir ./models/my_custom_korean_ocr_model
   ```
+
+The script will output extracted fields like "문서 제목", "이름", "주소", "주민등록번호", "발급일", "발급기관".
 
 ---
 
@@ -304,11 +310,8 @@ pip install -r requirements.txt
 
 ### Image Not Processed
 
-- Verify that the input path is correct and contains valid image files with supported extensions.
-- Use verbose flags for each script to enable detailed logs for debugging:
-  - For `resize.py`: `python resize.py ./input --verbose`
-  - For `crop.py`: `python crop.py ./input -v` (or `--verbose`)
-  - For `ocr.py`: `python ocr.py ./input_image.png --show_log` (for PaddleOCR logs)
+- Verify that the input path is correct and points to a valid image file with supported extensions.
+- For `ocr.py`: `python ocr.py ./input_image.png --show_log` (for PaddleOCR logs)
 - If `python resize.py` command fails due to invalid arguments or critical processing errors, it will exit with a non-zero status code. Check terminal output for specific error messages.
 - If `python crop.py` command encounters critical setup issues (e.g., model download failure, output directory problems, invalid input path) or unhandled processing errors, it will exit with a non-zero status code. `CropSetupError` indicates a problem that prevented the operation from starting. Check terminal output and logs for details.
 - If `python ocr.py` command fails, check for PaddleOCR model availability, correct paths, and library installation. Error messages in the terminal or logs should provide more details.
