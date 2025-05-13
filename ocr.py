@@ -4,6 +4,7 @@ import sys
 import re
 from paddleocr import PaddleOCR
 import argparse
+import traceback
 
 LABELS = {
     "O": ["기타"], # Other: 특별한 의미가 없는 기타 텍스트 또는 배경 요소
@@ -27,7 +28,7 @@ LABELS = {
     "note": ["비고", "주의사항", "특이사항", "참고사항"] # 비고/특이사항: 기타 참고해야 할 내용이나 특별한 조건
 }
 
-SUPPORTED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp')
+OCR_SUPPORTED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp')
 
 def extract_text_items_with_paddleocr(image_path_arg, paddleocr_args):
     try:
@@ -49,7 +50,6 @@ def extract_text_items_with_paddleocr(image_path_arg, paddleocr_args):
     except Exception as e:
         print(f"Unexpected error occurred while processing '{image_path_arg}': {e}")
         if paddleocr_args.show_log:
-            import traceback
             traceback.print_exc()
         return []
 
@@ -281,21 +281,20 @@ def process_input_path(input_path_to_process, paddleocr_args):
         sys.exit(1)
 
     if os.path.isfile(input_path_to_process):
-        if input_path_to_process.lower().endswith(SUPPORTED_EXTENSIONS):
+        if input_path_to_process.lower().endswith(OCR_SUPPORTED_EXTENSIONS):
             result_string = process_image_file(input_path_to_process, paddleocr_args)
             if result_string:
                 print(result_string)
         else:
-            print(f"File '{input_path_to_process}' is not a supported image file. Supported extensions: {SUPPORTED_EXTENSIONS}")
+            print(f"File '{input_path_to_process}' is not a supported image file. Supported extensions: {OCR_SUPPORTED_EXTENSIONS}")
             sys.exit(1)
     else:
         print(f"Path '{input_path_to_process}' is not a valid file. Directory processing is not supported.")
         sys.exit(1)
 
-if __name__ == "__main__":
-
+def get_ocr_parser():
     parser = argparse.ArgumentParser(description="Extracts text from images using PaddleOCR and applies labeling heuristics. Processes a single image file.")
-    parser.add_argument("input_path", help="Path to the image file to process.")
+    parser.add_argument("input_file", help="Path to the image file to process.")
 
     # PaddleOCR arguments
     paddleocr_group = parser.add_argument_group('PaddleOCR Arguments', 'Arguments for configuring PaddleOCR')
@@ -315,13 +314,17 @@ if __name__ == "__main__":
     paddleocr_group.add_argument('--use_space_char', action='store_true', default=True, help="Use space character. Default: True")
     paddleocr_group.add_argument('--use_dilation', action='store_true', default=True, help="Use dilation on text regions. Default: True")
     paddleocr_group.add_argument('--show_log', action='store_true', default=False, help="Show PaddleOCR logs. Default: False")
+    return parser
 
+if __name__ == "__main__":
+    parser = get_ocr_parser()
     args = parser.parse_args()
 
-    input_path_arg = args.input_path
+    input_file_arg = args.input_file
 
     paddleocr_args = argparse.Namespace()
+    paddleocr_group = next(ag for ag in parser._action_groups if ag.title == 'PaddleOCR Arguments')
     for action in paddleocr_group._group_actions:
         setattr(paddleocr_args, action.dest, getattr(args, action.dest))
 
-    process_input_path(input_path_arg, paddleocr_args)
+    process_input_path(input_file_arg, paddleocr_args)

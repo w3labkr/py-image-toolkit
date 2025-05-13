@@ -5,9 +5,9 @@ import argparse
 import sys
 from PIL import Image, UnidentifiedImageError
 
-SUPPORTED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')
+RESIZE_SUPPORTED_EXTENSIONS = ('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')
 
-FILTER_NAMES = {
+RESIZE_FILTER_NAMES = {
     "lanczos": "LANCZOS (High quality)",
     "bicubic": "BICUBIC (Medium quality)",
     "bilinear": "BILINEAR (Low quality)",
@@ -73,7 +73,7 @@ def process_image_file(input_path: str, output_path: str, resize_opts: dict) -> 
         return False, f"Input file '{input_path}' not found."
 
     file_ext = os.path.splitext(input_path)[1].lower()
-    if file_ext not in SUPPORTED_EXTENSIONS:
+    if file_ext not in RESIZE_SUPPORTED_EXTENSIONS:
         return False, f"Unsupported file extension: '{file_ext}'"
     
     output_dir = os.path.dirname(output_path)
@@ -135,7 +135,8 @@ def execute_resize_operation(input_file: str, output_file: str, overwrite: bool,
         success, error_msg = process_image_file(input_file, output_file, resize_options)
         
         if success:
-            print(f"Image processing complete: {input_file} -> {output_file}")
+            relative_output_file = os.path.relpath(output_file)
+            print(f"Image processing complete: {os.path.relpath(input_file)} -> {relative_output_file}")
             sys.exit(0)
         else:
             print(f"Image processing failed: {error_msg}")
@@ -145,7 +146,7 @@ def execute_resize_operation(input_file: str, output_file: str, overwrite: bool,
         print(f"Error occurred: {e}")
         sys.exit(2)
 
-def main():
+def get_resize_parser():
     parser = argparse.ArgumentParser(
         description="Py Image Toolkit CLI - Image Resizer",
         formatter_class=argparse.RawTextHelpFormatter
@@ -162,10 +163,13 @@ def main():
 
     parser.add_argument("-w", "--width", type=int, default=0, help="Target width in pixels for resizing (used when --ratio is not 'none').")
     parser.add_argument("-H", "--height", type=int, default=0, help="Target height in pixels for resizing (used when --ratio is not 'none').")
-    parser.add_argument("--filter", default='lanczos', choices=FILTER_NAMES.keys(),
+    parser.add_argument("--filter", default='lanczos', choices=RESIZE_FILTER_NAMES.keys(),
                        help="Resampling filter for resizing (default: lanczos):\n" +
-                            "\n".join([f"  {k}: {v}" for k, v in FILTER_NAMES.items()]))
+                            "\n".join([f"  {k}: {v}" for k, v in RESIZE_FILTER_NAMES.items()]))
+    return parser
 
+def main():
+    parser = get_resize_parser()
     try:
         args = parser.parse_args()
         
@@ -187,7 +191,7 @@ def main():
             filter_str=args.filter,
             filter_obj=_PIL_RESAMPLE_FILTERS[args.filter]
         )
-            
+        
     except SystemExit as e:
         sys.exit(e.code if e.code is not None else 1)
     except Exception as e:

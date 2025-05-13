@@ -1,6 +1,6 @@
 # py-image-toolkit
 
-`py-image-toolkit` is a Python-based toolkit for image processing. It provides a command-line interface (CLI) through individual scripts (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) for resizing images, performing automatic cropping based on face detection and composition rules, extracting text using Optical Character Recognition (OCR), and optimizing images. It's designed to be fast, efficient, and easy to use.
+A fast and easy-to-use Python toolkit for image processing with CLI tools for resizing, cropping, OCR, and optimization, including batch processing support.
 
 ---
 
@@ -17,18 +17,13 @@ py-image-toolkit/
 ├── crop.py            # CLI script for face detection and auto-cropping logic
 ├── ocr.py             # CLI script for Optical Character Recognition (OCR)
 ├── optimize.py        # CLI script for image optimization and compression
+├── batch_resize.py    # CLI script for batch image resizing
+├── batch_crop.py      # CLI script for batch image cropping
+├── batch_ocr.py       # CLI script for batch Optical Character Recognition (OCR)
+├── batch_optimize.py  # CLI script for batch image optimization
 ├── requirements.txt   # List of required libraries
 └── README.md          # Project documentation
 ```
-
-- `resize.py`: CLI script containing the core logic for image resizing and aspect ratio adjustments.
-- `crop.py`: CLI script containing the core logic for detecting faces and cropping images based on composition rules.
-- `ocr.py`: CLI script providing OCR functionality to extract text from images.
-- `optimize.py`: CLI script providing image optimization and compression functionality.
-- `models/`: Directory for storing machine learning models.
-  - `face_detection_yunet_2023mar.onnx`: Pretrained YuNet face detection model, automatically downloaded if not present for the `crop.py` script.
-  - PaddleOCR models (e.g., `ch_PP-OCRv3_det_infer`, `ko_PP-OCRv3_rec_infer`): Models for text detection, recognition, and classification used by `ocr.py`. These models need to be downloaded manually and placed in the default locations if not specified otherwise via arguments.
-- `requirements.txt`: Lists Python packages required to run the project.
 
 ---
 
@@ -91,8 +86,11 @@ pyenv versions
 
 ## General CLI Options
 
-Each script (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) is run directly and has its own set of options.
-- `ocr.py` provides CLI options for PaddleOCR configuration, and `--show_log` can be used to display PaddleOCR's internal logs. See the `Optical Character Recognition (OCR)` section below for details.
+Each script (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) and their batch counterparts (`batch_resize.py`, `batch_crop.py`, `batch_ocr.py`, `batch_optimize.py`) are run directly and have their own set of options.
+
+- Individual scripts generally take a single `input_file` as an argument.
+- Batch scripts generally take an `input_dir` as an argument to process multiple files.
+- `ocr.py` and `batch_ocr.py` provide CLI options for PaddleOCR configuration, and `--show_log` can be used to display PaddleOCR's internal logs. See the `Optical Character Recognition (OCR)` section below for details.
 
 ---
 
@@ -144,6 +142,44 @@ Examples for `resize`:
 
 ---
 
+## Batch Image Resizing
+
+The `batch_resize.py` script processes all images within a specified input directory, applying the same resizing logic as `resize.py` to each image.
+
+Syntax:
+
+```bash
+python batch_resize.py <input_dir> [options]
+```
+
+Key Options for `batch_resize`:
+
+- `input_dir`: Path to the directory containing source image files.
+- `-o, --output-dir`: Directory to save processed images (default: `output`).
+- `-r, --ratio`: Resize ratio behavior (`aspect_ratio`, `fixed`, `none`). (default: `aspect_ratio`).
+  - `aspect_ratio`: Maintain aspect ratio to fit the target size. Requires at least one of `--width` or `--height` to be positive.
+  - `none`: No resizing. If `width` or `height` are specified with `none`, a warning will be shown as they are ignored.
+- `-w, --width`: Target width for resizing in pixels (default: `0`).
+- `-H, --height`: Target height for resizing in pixels (default: `0`).
+- `--filter`: Resampling filter to use when resizing (`lanczos`, `bicubic`, `bilinear`, `nearest`). (default: `lanczos`).
+- `--overwrite`: Overwrite existing output files. If not specified, existing files will be skipped.
+
+Examples for `batch_resize`:
+
+- Resize all images in `./input_images` to a width of 1280px, maintaining aspect ratio, and save to `./output_resized_batch`:
+
+  ```bash
+  python batch_resize.py ./input_images -o ./output_resized_batch -w 1280
+  ```
+
+- Resize all images in `./input_images` to fixed 720x600 dimensions:
+
+  ```bash
+  python batch_resize.py ./input_images -r fixed -w 720 -H 600
+  ```
+
+---
+
 ## Image Cropping
 
 The `crop.py` script is designed to detect faces in a single image and automatically crop it based on composition rules like the rule of thirds or the golden ratio. It identifies subjects in the image, determines the main subject, and then calculates the optimal crop area. It automatically downloads the face detection model if needed.
@@ -157,7 +193,7 @@ python crop.py <input_file> [options]
 Key Options for `crop`:
 
 - `input_file`: (Required) Path to the image file to process.
-- `-o, --output_dir`: Directory to save results (Default: `output`).
+- `-o, --output-dir`: Directory to save results (Default: `output`).
 - `--overwrite`: Overwrite existing output files (Default: False).
 - `-v, --verbose`: Enable detailed (DEBUG level) logging for the crop operation (Default: False).
 - `-m, --method`: Method to select main subject (`largest`, `center`). (Default: `largest`).
@@ -189,6 +225,49 @@ Examples for `crop`:
 
   ```bash
   python crop.py ./input/sample.png --reference eye --padding-percent 10 --overwrite
+  ```
+
+---
+
+## Batch Image Cropping
+
+The `batch_crop.py` script processes all images within a specified input directory, applying the same face detection and auto-cropping logic as `crop.py` to each image.
+
+Syntax:
+
+```bash
+python batch_crop.py <input_dir> [options]
+```
+
+Key Options for `batch_crop`:
+
+- `input_dir`: (Required) Path to the directory containing image files to process.
+- `-o, --output-dir`: Directory to save results (Default: `output`).
+- `--overwrite`: Overwrite existing output files (Default: False).
+- `-v, --verbose`: Enable detailed (DEBUG level) logging for the crop operation (Default: False).
+- `-m, --method`: Method to select main subject (`largest`, `center`). (Default: `largest`).
+- `--ref, --reference`: Reference point for composition (`eye`, `box`). (Default: `box`).
+- `-c, --confidence`: Min face detection confidence (Default: `0.6`).
+- `-n, --nms`: Face detection NMS threshold (Default: `0.3`).
+- `--min-face-width`: Min face width in pixels (Default: `30`).
+- `--min-face-height`: Min face height in pixels (Default: `30`).
+- `-r, --ratio`: Target crop aspect ratio (e.g., '16:9', '1.0', 'None') (Default: `None`).
+- `--rule`: Composition rule(s) (`thirds`, `golden`, `both`). (Default: `both`).
+- `-p, --padding-percent`: Padding percentage around crop (%) (Default: `5.0`).
+- `--yunet-model-path`: Path to the YuNet ONNX model file. If not specified, it defaults to `models/face_detection_yunet_2023mar.onnx` and will be downloaded if missing.
+
+Examples for `batch_crop`:
+
+- Crop all images in `./input_folder` using default settings:
+
+  ```bash
+  python batch_crop.py ./input_folder
+  ```
+
+- Crop all images in `./input_folder`, saving to `./cropped_batch`, using the 'thirds' rule and a 16:9 aspect ratio:
+
+  ```bash
+  python batch_crop.py ./input_folder -o ./cropped_batch --rule thirds --ratio 16:9
   ```
 
 ---
@@ -240,6 +319,41 @@ Examples for `optimize`:
 
 ---
 
+## Batch Image Optimization
+
+The `batch_optimize.py` script processes all images within a specified input directory, applying the same optimization logic as `optimize.py` to each image.
+
+Syntax:
+
+```bash
+python batch_optimize.py <input_dir> [options]
+```
+
+Key Options for `batch_optimize`:
+
+- `input_dir`: Path to the directory containing image files to process.
+- `-o, --output-dir`: Directory to save optimized images (default: `output`).
+- `--overwrite`: Overwrite existing files if they already exist in the output directory (Default: False).
+- `--jpg-quality`: JPEG image quality setting (1-100, default: `85`).
+- `--webp-quality`: WebP image quality (1-100, default: `85`, ignored when `--lossless` option is used).
+- `--lossless`: Use lossless compression for WebP (ignores WebP quality setting).
+
+Examples for `batch_optimize`:
+
+- Optimize all images in `./source_images` with default settings:
+
+  ```bash
+  python batch_optimize.py ./source_images
+  ```
+
+- Optimize all images in `./source_images` with custom JPEG quality (70%) and save to `./optimized_batch`:
+
+  ```bash
+  python batch_optimize.py ./source_images -o ./optimized_batch --jpg-quality 70
+  ```
+
+---
+
 ## Optical Character Recognition (OCR)
 
 The `ocr.py` script uses PaddleOCR to extract text from a single image. It then attempts to identify and label key information such as document title, name, address, resident registration number, issue date, and issuer.
@@ -285,6 +399,45 @@ Examples for `ocr`:
   ```
 
 The script will output extracted fields like "문서 제목", "이름", "주소", "주민등록번호", "발급일", "발급기관".
+
+---
+
+## Batch Optical Character Recognition (OCR)
+
+The `batch_ocr.py` script processes all images within a specified input directory, applying the same OCR logic as `ocr.py` to each image and saving the results.
+
+Syntax:
+
+```bash
+python batch_ocr.py <input_dir> [options]
+```
+
+Key Options for `batch_ocr`:
+
+- `input_dir`: (Required) Path to the directory containing image files to process.
+- `--lang`: OCR language (default: `korean`). Refer to PaddleOCR documentation for supported languages.
+- `--rec_model_dir`: Path to the recognition model directory (default: `./models/ko_PP-OCRv3_rec_infer`).
+- `--det_model_dir`: Path to the detection model directory (default: `./models/ch_PP-OCRv3_det_infer`).
+- `--cls_model_dir`: Path to the direction classification model directory (default: `./models/ch_ppocr_mobile_v2.0_cls_infer`).
+- `--use_gpu`: Whether to use GPU for OCR processing (default: `False`).
+- (Other PaddleOCR specific options from `ocr.py` can also be used)
+- `--show_log`: Whether to display PaddleOCR's internal logs (default: `False`).
+
+Examples for `batch_ocr`:
+
+- Extract text from all images in `./scan_docs`:
+
+  ```bash
+  python batch_ocr.py ./scan_docs
+  ```
+
+- Extract Korean text from all images in `./id_cards` (using GPU):
+
+  ```bash
+  python batch_ocr.py ./id_cards --lang korean --use_gpu
+  ```
+
+The script will save extracted text or structured data for each image in the specified output directory.
 
 ---
 

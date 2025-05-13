@@ -14,8 +14,8 @@ YUNET_MODEL_FILENAME: str = "face_detection_yunet_2023mar.onnx"
 YUNET_MODEL_URL: str = f"https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/{YUNET_MODEL_FILENAME}"
 OUTPUT_SUFFIX_THIRDS: str = '_thirds'
 OUTPUT_SUFFIX_GOLDEN: str = '_golden'
-SUPPORTED_EXTENSIONS: Tuple[str, ...] = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp')
 MODEL_DIR_NAME: str = "models"
+CROP_SUPPORTED_EXTENSIONS: Tuple[str, ...] = ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif', '.webp')
 
 def download_model(model_url: str, file_path: str, is_main_process: bool) -> bool:
     model_dir = os.path.dirname(file_path)
@@ -23,7 +23,7 @@ def download_model(model_url: str, file_path: str, is_main_process: bool) -> boo
         try:
             os.makedirs(model_dir)
         except OSError as e:
-            print(f"Failed to create model directory '{os.path.abspath(model_dir)}': {e}")
+            print(f"Failed to create model directory '{os.path.relpath(model_dir)}': {e}")
             return False
 
     if not os.path.exists(file_path):
@@ -37,11 +37,11 @@ def download_model(model_url: str, file_path: str, is_main_process: bool) -> boo
                     f.write(chunk)
 
             if is_main_process:
-                print(f"Model file downloaded successfully: {os.path.abspath(file_path)}")
+                print(f"Model file downloaded successfully: {os.path.relpath(file_path)}")
             return True
         except Exception as e:
             print(f"Model file download failed: {e}")
-            print(f"Please manually download from the following URL and save as '{os.path.abspath(file_path)}': {model_url}")
+            print(f"Please manually download from the following URL and save as '{os.path.relpath(file_path)}': {model_url}")
             return False
     return True
 
@@ -72,16 +72,17 @@ def parse_aspect_ratio(ratio_str: Optional[str]) -> Optional[float]:
 
 def create_output_directory(output_dir: str) -> bool:
     abs_output_dir = os.path.abspath(output_dir)
+    rel_output_dir = os.path.relpath(output_dir)
     if not os.path.exists(abs_output_dir):
         try:
             os.makedirs(abs_output_dir)
-            print(f"Created output directory: {abs_output_dir}")
+            print(f"Created output directory: {rel_output_dir}")
             return True
         except OSError as e:
-            print(f"Failed to create output directory '{abs_output_dir}': {e}")
+            print(f"Failed to create output directory '{rel_output_dir}': {e}")
             return False
     elif not os.path.isdir(abs_output_dir):
-         print(f"The specified output path '{abs_output_dir}' is not a directory.")
+         print(f"The specified output path '{rel_output_dir}' is not a directory.")
          return False
     return True
 
@@ -276,7 +277,7 @@ def _save_cropped_image(cropped_bgr: np.ndarray, out_path: str, settings: argpar
     except Exception as e: print(f"{filename}: Error saving cropped image: {e}"); return False
 
 def _process_composition_rule(rule_name: str, rule_suffix: str, img_bgr: np.ndarray, ref_center: Tuple[int, int], current_settings: argparse.Namespace, original_ext: str) -> Tuple[bool, bool, str]:
-    filename = os.path.basename(current_settings.input_path); base_filename = os.path.splitext(filename)[0]
+    filename = os.path.basename(current_settings.input_file); base_filename = os.path.splitext(filename)[0]
     img_h, img_w = img_bgr.shape[:2]
     saved_actual_file = False; was_skipped_overwrite = False; error_message = ""
 
@@ -309,7 +310,7 @@ def process_image(image_path: str, global_settings: argparse.Namespace, detector
     start_time = time.time()
 
     current_settings = argparse.Namespace(**vars(global_settings))
-    current_settings.input_path = image_path
+    current_settings.input_file = image_path
 
     status = {'filename': filename, 'success': False, 'saved_files': 0, 'skipped_overwrite_rules': 0, 'message': ''}
 
@@ -362,38 +363,37 @@ def process_image(image_path: str, global_settings: argparse.Namespace, detector
     status['message'] += f" ({processing_time:.2f}s)."
     return status
 
-
-
 def execute_crop_operation(settings: argparse.Namespace) -> Dict[str, int]:
     if settings.yunet_model_path is None:
         settings.yunet_model_path = os.path.join(MODEL_DIR_NAME, YUNET_MODEL_FILENAME)
-    settings.yunet_model_path = os.path.abspath(settings.yunet_model_path)
+    abs_yunet_model_path = os.path.abspath(settings.yunet_model_path)
+    settings.yunet_model_path = abs_yunet_model_path
 
     settings.target_ratio_float = parse_aspect_ratio(settings.ratio)
 
     if not download_model(YUNET_MODEL_URL, settings.yunet_model_path, True):
-        print(f"Error: DNN model file is unavailable or download failed.")
+        print(f"DNN model file is unavailable or download failed.")
         sys.exit(2)
 
     if not create_output_directory(settings.output_dir):
-        print(f"Error: Cannot prepare output directory.")
+        print(f"Cannot prepare output directory.")
         sys.exit(2)
 
-    input_path = settings.input_path
+    input_file = settings.input_file
     summary = {'processed': 0, 'saved': 0, 'skipped': 0, 'failed': 0}
 
-    if os.path.isfile(input_path):
-        if not input_path.lower().endswith(SUPPORTED_EXTENSIONS):
-            print(f"File '{input_path}' is not a supported image type. Skipping.")
+    if os.path.isfile(input_file):
+        if not input_file.lower().endswith(CROP_SUPPORTED_EXTENSIONS):
+            print(f"File '{os.path.relpath(input_file)}' is not a supported image type. Skipping.")
             return summary 
 
-        print(f"Processing image file: {os.path.abspath(input_path)}")
+        print(f"Processing image file: {os.path.relpath(input_file)}")
         summary['processed'] = 1
         detector = None
         try:
             detector = cv2.FaceDetectorYN.create(settings.yunet_model_path, "", (0, 0))
             detector.setScoreThreshold(settings.confidence); detector.setNMSThreshold(settings.nms)
-            result = process_image(input_path, settings, detector)
+            result = process_image(input_file, settings, detector)
 
             saved_count = result.get('saved_files', 0)
             skipped_count = result.get('skipped_overwrite_rules', 0)
@@ -404,11 +404,11 @@ def execute_crop_operation(settings: argparse.Namespace) -> Dict[str, int]:
             summary['skipped'] = skipped_count
 
             if is_success and saved_count > 0:
-                print(f"Processed '{input_path}': {message}")
+                print(f"Processed '{input_file}': {message}")
             elif not is_success and saved_count == 0 and skipped_count > 0:
-                print(f"Skipped '{input_path}': {message}")
+                print(f"Skipped '{input_file}': {message}")
             else:
-                print(f"Failed '{input_path}': {message}")
+                print(f"Failed '{input_file}': {message}")
                 summary['failed'] = 1
                  
         except cv2.error as e:
@@ -418,68 +418,42 @@ def execute_crop_operation(settings: argparse.Namespace) -> Dict[str, int]:
             print(f"Error during image processing: {e}")
             summary['failed'] = 1
     else:
-        if not os.path.exists(input_path):
-            err_msg = f"Input path not found: {os.path.abspath(input_path)}"
+        if not os.path.exists(input_file):
+            err_msg = f"Input path not found: {os.path.relpath(input_file)}"
             print(err_msg)
             sys.exit(2)
         else:
-            err_msg = f"Input path is not a file: {os.path.abspath(input_path)}"
+            err_msg = f"Input path is not a file: {os.path.relpath(input_file)}"
             print(err_msg)
             sys.exit(2)
 
     return summary
 
-def main():
+def get_crop_parser():
     parser = argparse.ArgumentParser(
         description="Image cropping using face detection (YuNet) and composition rules (thirds, golden ratio).",
         formatter_class=argparse.RawTextHelpFormatter
     )
-    parser.add_argument("input_path", help="Path to the image file to process.")
-    parser.add_argument("-o", "--output_dir", default="output", help="Directory to save results. Default: 'output'.")
+    parser.add_argument("input_file", help="Path to the image file to process.")
+    parser.add_argument("-o", "--output-dir", default="output", help="Directory to save results. Default: 'output'.")
     parser.add_argument("--overwrite", action="store_true", default=False, help="Overwrite existing output files. Default: False.")
-
     parser.add_argument("-m", "--method", choices=['largest', 'center'], default='largest', help="Method to select main subject. Default: largest.")
     parser.add_argument("--ref", "--reference", dest="reference", choices=['eye', 'box'], default='box', help="Reference point for composition. Default: box.")
     parser.add_argument("-c", "--confidence", type=float, default=0.6, help="Min face detection confidence. Default: 0.6.")
     parser.add_argument("-n", "--nms", type=float, default=0.3, help="Face detection NMS threshold. Default: 0.3.")
     parser.add_argument("--min-face-width", type=int, default=30, help="Min face width in pixels. Default: 30.")
     parser.add_argument("--min-face-height", type=int, default=30, help="Min face height in pixels. Default: 30.")
+    parser.add_argument("--rule", choices=['thirds', 'golden', 'both'], default='both', help="Composition rule(s) to apply. Default: 'both'.")
+    parser.add_argument("--ratio", type=str, default=None, help="Target aspect ratio (e.g., '16:9', '4:3', '1:1', or 'None' for original). Default: None (original).")
+    parser.add_argument("--padding-percent", type=float, default=0.0, help="Padding percentage around the final crop (0.0 to 100.0). Default: 0.0.")
+    parser.add_argument("--yunet-model-path", type=str, default=None,
+                            help=f"Path to the YuNet model file. Default: '{MODEL_DIR_NAME}/{YUNET_MODEL_FILENAME}' if not specified.")
+    return parser
 
-    parser.add_argument("--ratio", type=str, default=None, help="Target crop aspect ratio (e.g., '16:9', '1.0', 'None'). Default: None.")
-    parser.add_argument("--rule", choices=['thirds', 'golden', 'both'], default='both', help="Composition rule to use. Default: both.")
-    parser.add_argument("--padding-percent", type=float, default=5.0, help="Padding percentage around crop. Default: 5.0.")
-    
-    parser.add_argument("--yunet-model-path", type=str, default=None, help="Path to the YuNet ONNX model file. If not specified, it defaults to models/face_detection_yunet_2023mar.onnx and will be downloaded if missing.")
-
-    args = parser.parse_args()
-
-    try:
-        summary = execute_crop_operation(args) 
-        
-        total_processed = summary.get('processed', 0)
-        total_saved = summary.get('saved', 0) 
-        total_skipped_overwrite = summary.get('skipped', 0) 
-        total_failed = summary.get('failed', 0) 
-
-        print(f"===== Image Cropping Script Finished =====")
-        print(f"Summary: Image Processed={total_processed}, Outputs Saved={total_saved}, Outputs Skipped(Overwrite)={total_skipped_overwrite}, Failed={total_failed}")
-
-        if total_failed > 0:
-            print(f"Completed with failure.")
-            sys.exit(1)
-        elif total_saved > 0:
-            print(f"Completed successfully (saved {total_saved} output files).")
-            sys.exit(0)
-        elif total_skipped_overwrite > 0:
-            print(f"Completed, but no new output files were saved due to overwrite policy (skipped {total_skipped_overwrite} outputs).")
-            sys.exit(0)
-        else:
-            print("Completed, but no output files were generated (check logs for details).")
-            sys.exit(0)
-            
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        sys.exit(3)
+def main():
+    parser = get_crop_parser()
+    settings = parser.parse_args()
+    execute_crop_operation(settings)
 
 if __name__ == "__main__":
     main()
