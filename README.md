@@ -17,10 +17,10 @@ py-image-toolkit/
 ├── crop.py            # CLI script for face detection and auto-cropping logic
 ├── ocr.py             # CLI script for Optical Character Recognition (OCR)
 ├── optimize.py        # CLI script for image optimization and compression
-├── batch_resize.py    # CLI script for batch image resizing
-├── batch_crop.py      # CLI script for batch image cropping
-├── batch_ocr.py       # CLI script for batch Optical Character Recognition (OCR)
-├── batch_optimize.py  # CLI script for batch image optimization
+├── resizes.py    # CLI script for batch image resizing
+├── crops.py      # CLI script for batch image cropping
+├── ocrs.py       # CLI script for batch Optical Character Recognition (OCR)
+├── optimizes.py  # CLI script for batch image optimization
 ├── requirements.txt   # List of required libraries
 └── README.md          # Project documentation
 ```
@@ -86,7 +86,7 @@ pyenv versions
 
 ## General CLI Options
 
-Each script (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) and their batch counterparts (`batch_resize.py`, `batch_crop.py`, `batch_ocr.py`, `batch_optimize.py`) are run directly and have their own set of options.
+Each script (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) and their batch counterparts (`resizes.py`, `crops.py`, `ocrs.py`, `optimizes.py`) are run directly and have their own set of options.
 
 - Individual scripts generally take a single `input_file` as an argument.
 - Batch scripts generally take an `input_dir` as an argument to process multiple files.
@@ -144,12 +144,12 @@ Examples for `resize`:
 
 ## Batch Image Resizing
 
-The `batch_resize.py` script processes all images within a specified input directory, applying the same resizing logic as `resize.py` to each image.
+The `resizes.py` script processes all images within a specified input directory, applying the same resizing logic as `resize.py` to each image.
 
 Syntax:
 
 ```bash
-python batch_resize.py <input_dir> [options]
+python resizes.py <input_dir> [options]
 ```
 
 Key Options for `batch_resize`:
@@ -169,13 +169,13 @@ Examples for `batch_resize`:
 - Resize all images in `./input_images` to a width of 1280px, maintaining aspect ratio, and save to `./output_resized_batch`:
 
   ```bash
-  python batch_resize.py ./input_images -o ./output_resized_batch -w 1280
+  python resizes.py ./input_images -o ./output_resized_batch -w 1280
   ```
 
 - Resize all images in `./input_images` to fixed 720x600 dimensions:
 
   ```bash
-  python batch_resize.py ./input_images -r fixed -w 720 -H 600
+  python resizes.py ./input_images -r fixed -w 720 -H 600
   ```
 
 ---
@@ -231,12 +231,12 @@ Examples for `crop`:
 
 ## Batch Image Cropping
 
-The `batch_crop.py` script processes all images within a specified input directory, applying the same face detection and auto-cropping logic as `crop.py` to each image.
+The `crops.py` script processes all images within a specified input directory, applying the same face detection and auto-cropping logic as `crop.py` to each image.
 
 Syntax:
 
 ```bash
-python batch_crop.py <input_dir> [options]
+python crops.py <input_dir> [options]
 ```
 
 Key Options for `batch_crop`:
@@ -261,13 +261,13 @@ Examples for `batch_crop`:
 - Crop all images in `./input_folder` using default settings:
 
   ```bash
-  python batch_crop.py ./input_folder
+  python crops.py ./input_folder
   ```
 
 - Crop all images in `./input_folder`, saving to `./cropped_batch`, using the 'thirds' rule and a 16:9 aspect ratio:
 
   ```bash
-  python batch_crop.py ./input_folder -o ./cropped_batch --rule thirds --ratio 16:9
+  python crops.py ./input_folder -o ./cropped_batch --rule thirds --ratio 16:9
   ```
 
 ---
@@ -321,12 +321,12 @@ Examples for `optimize`:
 
 ## Batch Image Optimization
 
-The `batch_optimize.py` script processes all images within a specified input directory, applying the same optimization logic as `optimize.py` to each image.
+The `optimizes.py` script processes all images within a specified input directory, applying the same optimization logic as `optimize.py` to each image.
 
 Syntax:
 
 ```bash
-python batch_optimize.py <input_dir> [options]
+python optimizes.py <input_dir> [options]
 ```
 
 Key Options for `batch_optimize`:
@@ -343,13 +343,13 @@ Examples for `batch_optimize`:
 - Optimize all images in `./source_images` with default settings:
 
   ```bash
-  python batch_optimize.py ./source_images
+  python optimizes.py ./source_images
   ```
 
 - Optimize all images in `./source_images` with custom JPEG quality (70%) and save to `./optimized_batch`:
 
   ```bash
-  python batch_optimize.py ./source_images -o ./optimized_batch --jpg-quality 70
+  python optimizes.py ./source_images -o ./optimized_batch --jpg-quality 70
   ```
 
 ---
@@ -404,12 +404,12 @@ The script will output extracted fields like "문서 제목", "이름", "주소"
 
 ## Batch Optical Character Recognition (OCR)
 
-The `batch_ocr.py` script processes all images within a specified input directory, applying the same OCR logic as `ocr.py` to each image and saving the results.
+The `ocrs.py` script processes all images within a specified input directory, applying the same OCR logic as `ocr.py` to each image and saving the results.
 
 Syntax:
 
 ```bash
-python batch_ocr.py <input_dir> [options]
+python ocrs.py <input_dir> [options]
 ```
 
 Key Options for `batch_ocr`:
@@ -428,13 +428,13 @@ Examples for `batch_ocr`:
 - Extract text from all images in `./scan_docs`:
 
   ```bash
-  python batch_ocr.py ./scan_docs
+  python ocrs.py ./scan_docs
   ```
 
 - Extract Korean text from all images in `./id_cards` (using GPU):
 
   ```bash
-  python batch_ocr.py ./id_cards --lang korean --use_gpu
+  python ocrs.py ./id_cards --lang korean --use_gpu
   ```
 
 The script will save extracted text or structured data for each image in the specified output directory.
