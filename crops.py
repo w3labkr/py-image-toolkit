@@ -2,7 +2,79 @@
 import os
 import subprocess
 import sys
+import multiprocessing
 from crop import get_parser, CROP_SUPPORTED_EXTENSIONS
+
+
+def _process_image_item(args):
+    input_item_path, output_dir, overwrite, rule, ratio, padding_percent, reference, method, min_face_width, min_face_height, model_path, crop_script_path = args
+    item = os.path.basename(input_item_path)
+    
+    try:
+        file_name, file_extension = os.path.splitext(item)
+        if file_extension.lower() in CROP_SUPPORTED_EXTENSIONS:
+            print(f"Processing '{item}'...")
+
+            command = [
+                sys.executable,
+                crop_script_path,
+                input_item_path,
+                "--output-dir",
+                output_dir,
+            ]
+            if overwrite:
+                command.append("--overwrite")
+
+            if rule is not None:
+                command.extend(["--rule", str(rule)])
+            if ratio is not None:
+                command.extend(["--ratio", str(ratio)])
+            if padding_percent is not None:
+                command.extend(["--padding-percent", str(padding_percent)])
+            if reference is not None:
+                command.extend(["--reference", str(reference)])
+            if method is not None:
+                command.extend(["--method", str(method)])
+            if min_face_width is not None:
+                command.extend(["--min-face-width", str(min_face_width)])
+            if min_face_height is not None:
+                command.extend(["--min-face-height", str(min_face_height)])
+            if model_path is not None:
+                command.extend(["--model-path", str(model_path)])
+
+            process = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            output_message = f"Successfully processed '{item}'."
+            if process.stdout:
+                output_message += f"\\n  Output:\\n{process.stdout.strip()}"
+            if process.stderr:
+                output_message += f"\\n  Error output:\\n{process.stderr.strip()}"
+            print(output_message)
+            print("-" * 30)
+            return None
+        else:
+            print(f"Skipping '{item}' (unsupported extension).")
+            print("-" * 30)
+            return f"Skipped '{item}' (unsupported extension)."
+    except subprocess.CalledProcessError as e:
+        error_message = f"Error processing '{item}':"
+        if e.stdout:
+            error_message += f"\\n  Standard output:\\n{e.stdout.strip()}"
+        if e.stderr:
+            error_message += f"\\n  Standard error:\\n{e.stderr.strip()}"
+        print(error_message)
+        print("-" * 30)
+        return error_message
+    except Exception as e:
+        error_message = f"Unexpected error processing '{item}': {e}"
+        print(error_message)
+        print("-" * 30)
+        return error_message
 
 
 def run(
@@ -47,69 +119,39 @@ def run(
     )
     print("-" * 30)
 
+    tasks = []
     for item in os.listdir(input_dir):
         input_item_path = os.path.join(input_dir, item)
         if os.path.isfile(input_item_path):
-            file_name, file_extension = os.path.splitext(item)
-            if file_extension.lower() in CROP_SUPPORTED_EXTENSIONS:
-                print(f"Processing '{item}'...")
-
-                command = [
-                    sys.executable,
-                    crop_script_path,
-                    input_item_path,
-                    "--output-dir",
-                    output_dir,
-                ]
-                if overwrite:
-                    command.append("--overwrite")
-
-                if rule is not None:
-                    command.extend(["--rule", str(rule)])
-                if ratio is not None:
-                    command.extend(["--ratio", str(ratio)])
-                if padding_percent is not None:
-                    command.extend(["--padding-percent", str(padding_percent)])
-                if reference is not None:
-                    command.extend(["--reference", str(reference)])
-                if method is not None:
-                    command.extend(["--method", str(method)])
-                if min_face_width is not None:
-                    command.extend(["--min-face-width", str(min_face_width)])
-                if min_face_height is not None:
-                    command.extend(["--min-face-height", str(min_face_height)])
-                if model_path is not None:
-                    command.extend(["--model-path", str(model_path)])
-
-                try:
-                    process = subprocess.run(
-                        command,
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                    )
-                    if process.stdout:
-                        print(f"  Output:\n{process.stdout.strip()}")
-                    if process.stderr:
-                        print(
-                            f"  Error output:\n{process.stderr.strip()}",
-                            file=sys.stderr,
-                        )
-                    print(f"Successfully processed '{item}'.")
-                except subprocess.CalledProcessError as e:
-                    print(f"Error processing '{item}':")
-                    if e.stdout:
-                        print(f"  Standard output:\n{e.stdout.strip()}")
-                    if e.stderr:
-                        print(f"  Standard error:\n{e.stderr.strip()}")
-                except Exception as e:
-                    print(f"Unexpected error processing '{item}': {e}")
-                print("-" * 30)
-            else:
-                print(f"Skipping '{item}' (unsupported extension).")
+            tasks.append((
+                input_item_path, output_dir, overwrite, rule, ratio, 
+                padding_percent, reference, method, min_face_width, 
+                min_face_height, model_path, crop_script_path
+            ))
         else:
             print(f"Skipping '{item}' (directory).")
+            print("-" * 30)
+
+    if not tasks:
+        print("No image files found to process.")
+        print("All tasks completed.")
+        return
+
+    # Determine the number of processes to use
+    # Default to the number of CPU cores, but not more than the number of tasks
+    num_processes = min(multiprocessing.cpu_count(), len(tasks))
+    print(f"Using {num_processes} processes for parallel execution.")
+    print("-" * 30)
+
+
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        results = pool.map(_process_image_item, tasks)
+
+    for result in results:
+        if result: # Print errors or skip messages that were returned
+            # Errors/skip messages are already printed within _process_image_item
+            pass
+
 
     print("All tasks completed.")
 

@@ -3,12 +3,59 @@ import os
 import subprocess
 import sys
 import argparse
+import multiprocessing
 from resize import (
     RESIZE_SUPPORTED_EXTENSIONS,
     RESIZE_FILTER_NAMES,
     _PIL_RESAMPLE_FILTERS,
     get_parser,
 )
+
+
+def process_image(args_tuple):
+    input_item_path, output_dir, overwrite, resize_mode, width, height, filter_str, resize_script_path = args_tuple
+    item = os.path.basename(input_item_path)
+    try:
+        print(f"Processing '{item}'...")
+
+        output_filename = os.path.basename(input_item_path)
+        output_item_path = os.path.join(output_dir, output_filename)
+
+        try:
+            relative_output_item_path = os.path.relpath(output_item_path)
+        except ValueError:
+            relative_output_item_path = output_item_path
+
+        command = [
+            sys.executable,
+            resize_script_path,
+            input_item_path,
+            "--output-dir",
+            output_dir,
+            "--ratio",
+            resize_mode,
+            "--width",
+            str(width),
+            "--height",
+            str(height),
+            "--filter",
+            filter_str,
+        ]
+        if overwrite:
+            command.append("--overwrite")
+
+        process = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        return f"Successfully processed '{item}' to '{relative_output_item_path}'.\nOutput:\n{process.stdout.strip()}", f"Error output:\n{process.stderr.strip()}" if process.stderr else ""
+    except subprocess.CalledProcessError as e:
+        return None, f"Error processing '{item}':\n  Standard output:\n{e.stdout.strip()}\n  Standard error:\n{e.stderr.strip()}"
+    except Exception as e:
+        return None, f"Unexpected error processing '{item}': {e}"
 
 
 def run(
@@ -49,70 +96,36 @@ def run(
     )
     print("-" * 30)
 
+    tasks = []
     for item in os.listdir(input_dir):
         input_item_path = os.path.join(input_dir, item)
         if os.path.isfile(input_item_path):
             file_name, file_extension = os.path.splitext(item)
             if file_extension.lower() in RESIZE_SUPPORTED_EXTENSIONS:
-                print(f"Processing '{item}'...")
-
-                output_filename = os.path.basename(input_item_path)
-                output_item_path = os.path.join(output_dir, output_filename)
-
-                try:
-                    relative_output_item_path = os.path.relpath(output_item_path)
-                except ValueError:
-                    relative_output_item_path = output_item_path
-
-                command = [
-                    sys.executable,
-                    resize_script_path,
-                    input_item_path,
-                    "--output-dir",
-                    output_dir,
-                    "--ratio",
-                    resize_mode,
-                    "--width",
-                    str(width),
-                    "--height",
-                    str(height),
-                    "--filter",
-                    filter_str,
-                ]
-                if overwrite:
-                    command.append("--overwrite")
-
-                try:
-                    process = subprocess.run(
-                        command,
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                    )
-                    if process.stdout:
-                        print(f"  Output:\n{process.stdout.strip()}")
-                    if process.stderr:
-                        print(
-                            f"  Error output:\n{process.stderr.strip()}",
-                            file=sys.stderr,
-                        )
-                    print(
-                        f"Successfully processed '{item}' to '{relative_output_item_path}'."
-                    )
-                except subprocess.CalledProcessError as e:
-                    print(f"Error processing '{item}':")
-                    if e.stdout:
-                        print(f"  Standard output:\n{e.stdout.strip()}")
-                    if e.stderr:
-                        print(f"  Standard error:\n{e.stderr.strip()}")
-                except Exception as e:
-                    print(f"Unexpected error processing '{item}': {e}")
-                print("-" * 30)
+                tasks.append((input_item_path, output_dir, overwrite, resize_mode, width, height, filter_str, resize_script_path))
             else:
                 print(f"Skipping '{item}' (unsupported extension).")
         else:
             print(f"Skipping '{item}' (directory).")
+
+    if not tasks:
+        print("No supported image files found to process.")
+        sys.exit(0)
+
+    num_processes = min(multiprocessing.cpu_count(), len(tasks))
+    print(f"Using {num_processes} processes for parallel execution.")
+    print("-" * 30)
+
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        results = pool.map(process_image, tasks)
+
+    print("-" * 30)
+    for success_msg, error_msg in results:
+        if success_msg:
+            print(success_msg)
+        if error_msg:
+            print(error_msg, file=sys.stderr)
+        print("-" * 30)
 
     print("All tasks completed.")
 

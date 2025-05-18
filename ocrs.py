@@ -3,7 +3,43 @@ import os
 import subprocess
 import sys
 import argparse
+import multiprocessing
 from ocr import OCR_SUPPORTED_EXTENSIONS
+
+
+def process_image(input_item_path, item_name, paddleocr_cli_args, ocr_script_path):
+    file_name, file_extension = os.path.splitext(item_name)
+    if file_extension.lower() in OCR_SUPPORTED_EXTENSIONS:
+        print(f"Processing '{item_name}'...")
+
+        command = [sys.executable, ocr_script_path, input_item_path]
+        command.extend(paddleocr_cli_args)
+
+        try:
+            process = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            output = f"Successfully processed '{item_name}'."
+            if process.stdout:
+                output += f"\\n  Output:\\n{process.stdout.strip()}"
+            if process.stderr:
+                output += f"\\n  Error output:\\n{process.stderr.strip()}"
+            return output
+        except subprocess.CalledProcessError as e:
+            error_output = f"Error processing '{item_name}':"
+            if e.stdout:
+                error_output += f"\\n  Standard output:\\n{e.stdout.strip()}"
+            if e.stderr:
+                error_output += f"\\n  Standard error:\\n{e.stderr.strip()}"
+            return error_output
+        except Exception as e:
+            return f"Unexpected error processing '{item_name}': {e}"
+    else:
+        return f"Skipping '{item_name}' (unsupported extension)."
 
 
 def run(input_dir, paddleocr_cli_args):
@@ -14,7 +50,7 @@ def run(input_dir, paddleocr_cli_args):
     ocr_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr.py")
     if not os.path.isfile(ocr_script_path):
         print(
-            f"'ocr.py' script not found. It should be in the same directory as 'batch_ocr.py'."
+            f"'ocr.py' script not found. It should be in the same directory as 'ocrs.py'."
         )
         sys.exit(1)
 
@@ -22,45 +58,28 @@ def run(input_dir, paddleocr_cli_args):
     print(f"PaddleOCR arguments (passed to ocr.py): {' '.join(paddleocr_cli_args)}")
     print("-" * 30)
 
+    tasks = []
     for item in os.listdir(input_dir):
         input_item_path = os.path.join(input_dir, item)
         if os.path.isfile(input_item_path):
-            file_name, file_extension = os.path.splitext(item)
-            if file_extension.lower() in OCR_SUPPORTED_EXTENSIONS:
-                print(f"Processing '{item}'...")
-
-                command = [sys.executable, ocr_script_path, input_item_path]
-                command.extend(paddleocr_cli_args)
-
-                try:
-                    process = subprocess.run(
-                        command,
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        encoding="utf-8",
-                    )
-                    if process.stdout:
-                        print(f"  Output:\n{process.stdout.strip()}")
-                    if process.stderr:
-                        print(
-                            f"  Error output:\n{process.stderr.strip()}",
-                            file=sys.stderr,
-                        )
-                    print(f"Successfully processed '{item}'.")
-                except subprocess.CalledProcessError as e:
-                    print(f"Error processing '{item}':")
-                    if e.stdout:
-                        print(f"  Standard output:\n{e.stdout.strip()}")
-                    if e.stderr:
-                        print(f"  Standard error:\n{e.stderr.strip()}")
-                except Exception as e:
-                    print(f"Unexpected error processing '{item}': {e}")
-                print("-" * 30)
-            else:
-                print(f"Skipping '{item}' (unsupported extension).")
+            tasks.append((input_item_path, item, paddleocr_cli_args, ocr_script_path))
         else:
             print(f"Skipping '{item}' (directory).")
+            print("-" * 30)
+
+    # Determine the number of processes to use, e.g., number of CPU cores
+    # Or a fixed number, e.g., 4. For CPU-bound tasks, os.cpu_count() is a good default.
+    # For I/O bound tasks or tasks that release GIL, more processes might be beneficial.
+    # Let's use os.cpu_count() or a sensible default if it's None.
+    num_processes = os.cpu_count() or 4 
+
+    with multiprocessing.Pool(processes=num_processes) as pool:
+        results = pool.starmap(process_image, tasks)
+
+    for result in results:
+        if result: # process_image can return None for skipped directories
+            print(result)
+            print("-" * 30)
 
     print("All tasks completed.")
 
