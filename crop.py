@@ -9,6 +9,7 @@ import argparse
 import time
 import sys
 import requests
+import collections.abc # collections.abc를 임포트합니다.
 
 YUNET_MODEL_FILENAME: str = "face_detection_yunet_2023mar.onnx"
 YUNET_MODEL_URL: str = (
@@ -129,17 +130,30 @@ def detect_faces_dnn(
 
         if faces is not None and faces[1] is not None:
             for face_info in faces[1]:
+                if not isinstance(face_info, collections.abc.Sequence):
+                    print(f"Warning: Skipping non-sequence face data (type: {type(face_info)}).")
+                    continue
+                
+                if len(face_info) < 15:
+                    print(f"Warning: face_info data is too short (len: {len(face_info)}, expected 15). Skipping.")
+                    continue
+
                 x, y, w, h = (
-                    int(face_info[0]),
-                    int(face_info[1]),
-                    int(face_info[2]),
-                    int(face_info[3]),
+                    int(face_info[0]), # type: ignore
+                    int(face_info[1]), # type: ignore
+                    int(face_info[2]), # type: ignore
+                    int(face_info[3]), # type: ignore
                 )
                 if w < min_w or h < min_h:
                     continue
 
-                landmarks = face_info[4:14].reshape(5, 2).astype(int)
-                score = float(face_info[14])
+                landmarks_data = face_info[4:14] # type: ignore
+                if not isinstance(landmarks_data, np.ndarray):
+                    print(f"Warning: landmarks_data is not a numpy array (type: {type(landmarks_data)}). Skipping.")
+                    continue
+                landmarks = landmarks_data.reshape(5, 2).astype(int)
+                
+                score = float(face_info[14]) # type: ignore
 
                 eye_center_x = (landmarks[0][0] + landmarks[1][0]) / 2
                 eye_center_y = (landmarks[0][1] + landmarks[1][1]) / 2
@@ -263,6 +277,7 @@ def calculate_optimal_crop(
         return None
 
     cx, cy = subject_center
+    closest_point: Optional[Tuple[int, int]] = None
     try:
         aspect_ratio = (
             target_aspect_ratio if target_aspect_ratio is not None else (width / height)
@@ -308,7 +323,7 @@ def calculate_optimal_crop(
         return x1, y1, x2, y2
     except Exception as e:
         print(
-            f"Error calculating optimal crop (Subject: {subject_center}, RulePt: {closest_point if 'closest_point' in locals() else 'N/A'}): {e}"
+            f"Error calculating optimal crop (Subject: {subject_center}, RulePt: {closest_point}): {e}"
         )
         return None
 
@@ -479,6 +494,10 @@ def process_image(
     img_bgr, original_ext = _load_and_prepare_image(image_path)
     if img_bgr is None:
         status["message"] = "Failed to load or prepare image."
+        return status
+
+    if original_ext is None:
+        status["message"] = "Image loaded, but unable to determine file extension."
         return status
 
     img_h, img_w = img_bgr.shape[:2]
