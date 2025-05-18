@@ -14,10 +14,11 @@ from resize import (
 
 
 def process_image(args_tuple):
-    input_item_path, output_dir, overwrite, resize_mode, width, height, filter_str, resize_script_path = args_tuple
+    input_item_path, output_dir, overwrite, resize_mode, width, height, filter_str, resize_script_path, suppress_output = args_tuple
     item = os.path.basename(input_item_path)
     try:
-        print(f"Processing '{item}'...")
+        if not suppress_output:
+            print(f"Processing '{item}'...")
 
         output_filename = os.path.basename(input_item_path)
         output_item_path = os.path.join(output_dir, output_filename)
@@ -52,11 +53,30 @@ def process_image(args_tuple):
             text=True,
             encoding="utf-8",
         )
-        return f"Successfully processed '{item}' to '{relative_output_item_path}'.\nOutput:\n{process.stdout.strip()}", f"Error output:\n{process.stderr.strip()}" if process.stderr else ""
+        success_message = f"Successfully processed '{item}' to '{relative_output_item_path}'."
+        output_details = ""
+        if process.stdout:
+            output_details += f"\\nOutput:\\n{process.stdout.strip()}"
+        if process.stderr:
+            output_details += f"\\nError output:\\n{process.stderr.strip()}"
+        
+        if not suppress_output:
+            print(success_message + output_details)
+            print("-" * 30)
+        
+        return success_message + (output_details if suppress_output and output_details else ""), "" # Return details if suppressed and present
     except subprocess.CalledProcessError as e:
-        return None, f"Error processing '{item}':\n  Standard output:\n{e.stdout.strip()}\n  Standard error:\n{e.stderr.strip()}"
+        error_message = f"Error processing '{item}':\\n  Standard output:\\n{e.stdout.strip()}\\n  Standard error:\\n{e.stderr.strip()}"
+        if not suppress_output:
+            print(error_message)
+            print("-" * 30)
+        return None, error_message
     except Exception as e:
-        return None, f"Unexpected error processing '{item}': {e}"
+        error_message = f"Unexpected error processing '{item}': {e}"
+        if not suppress_output:
+            print(error_message)
+            print("-" * 30)
+        return None, error_message
 
 
 def run(
@@ -103,11 +123,15 @@ def run(
         if os.path.isfile(input_item_path):
             file_name, file_extension = os.path.splitext(item)
             if file_extension.lower() in RESIZE_SUPPORTED_EXTENSIONS:
-                tasks.append((input_item_path, output_dir, overwrite, resize_mode, width, height, filter_str, resize_script_path))
+                tasks.append((input_item_path, output_dir, overwrite, resize_mode, width, height, filter_str, resize_script_path, True)) # Add suppress_output=True
             else:
-                print(f"Skipping '{item}' (unsupported extension).")
+                # Only print if not using progress bar for other files, or if it's a standalone skip
+                if not tasks: # Or some other logic if you want to always print skips
+                    print(f"Skipping '{item}' (unsupported extension).")
         else:
-            print(f"Skipping '{item}' (directory).")
+            # Only print if not using progress bar for other files
+            if not tasks:
+                print(f"Skipping '{item}' (directory).")
 
     if not tasks:
         print("No supported image files found to process.")
@@ -120,13 +144,14 @@ def run(
     with multiprocessing.Pool(processes=num_processes) as pool:
         results = list(tqdm(pool.imap(process_image, tasks), total=len(tasks), desc="Resizing images"))
 
-    print("-" * 30)
+    print("-" * 30) # Print separator once before all results
     for success_msg, error_msg in results:
-        if success_msg:
+        if success_msg: # This will now include details if suppress_output was True
             print(success_msg)
         if error_msg:
             print(error_msg, file=sys.stderr)
-        print("-" * 30)
+        if success_msg or error_msg: # Print separator only if there was some message
+            print("-" * 30)
 
     print("All tasks completed.")
 

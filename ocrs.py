@@ -9,10 +9,11 @@ from ocr import OCR_SUPPORTED_EXTENSIONS
 
 
 def process_image(args_tuple):
-    input_item_path, item_name, paddleocr_cli_args, ocr_script_path = args_tuple
+    input_item_path, item_name, paddleocr_cli_args, ocr_script_path, suppress_output = args_tuple
     file_name, file_extension = os.path.splitext(item_name)
     if file_extension.lower() in OCR_SUPPORTED_EXTENSIONS:
-        print(f"Processing '{item_name}'...")
+        if not suppress_output:
+            print(f"Processing '{item_name}'...")
 
         command = [sys.executable, ocr_script_path, input_item_path]
         command.extend(paddleocr_cli_args)
@@ -30,18 +31,32 @@ def process_image(args_tuple):
                 output += f"\\n  Output:\\n{process.stdout.strip()}"
             if process.stderr:
                 output += f"\\n  Error output:\\n{process.stderr.strip()}"
-            return output
+            if not suppress_output:
+                print(output)
+                print("-" * 30)
+            return output if suppress_output else None # Return output for summary, but don't print if suppressed
         except subprocess.CalledProcessError as e:
             error_output = f"Error processing '{item_name}':"
             if e.stdout:
                 error_output += f"\\n  Standard output:\\n{e.stdout.strip()}"
             if e.stderr:
                 error_output += f"\\n  Standard error:\\n{e.stderr.strip()}"
+            if not suppress_output:
+                print(error_output)
+                print("-" * 30)
             return error_output
         except Exception as e:
-            return f"Unexpected error processing '{item_name}': {e}"
+            error_message = f"Unexpected error processing '{item_name}': {e}"
+            if not suppress_output:
+                print(error_message)
+                print("-" * 30)
+            return error_message
     else:
-        return f"Skipping '{item_name}' (unsupported extension)."
+        skip_message = f"Skipping '{item_name}' (unsupported extension)."
+        if not suppress_output:
+            print(skip_message)
+            print("-" * 30)
+        return skip_message
 
 
 def run(input_dir, paddleocr_cli_args):
@@ -64,7 +79,7 @@ def run(input_dir, paddleocr_cli_args):
     for item in os.listdir(input_dir):
         input_item_path = os.path.join(input_dir, item)
         if os.path.isfile(input_item_path):
-            tasks.append((input_item_path, item, paddleocr_cli_args, ocr_script_path))
+            tasks.append((input_item_path, item, paddleocr_cli_args, ocr_script_path, True)) # Add suppress_output=True
         else:
             print(f"Skipping '{item}' (directory).")
             print("-" * 30)
@@ -79,8 +94,8 @@ def run(input_dir, paddleocr_cli_args):
         results = list(tqdm(pool.imap(process_image, tasks), total=len(tasks), desc="Performing OCR"))
 
     for result in results:
-        if result: # process_image can return None for skipped directories
-            print(result)
+        if result: # Print errors or skip messages that were returned
+            print(result) # Print summary of errors/skips after progress bar
             print("-" * 30)
 
     print("All tasks completed.")

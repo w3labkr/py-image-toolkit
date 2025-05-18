@@ -8,13 +8,14 @@ from crop import get_parser, CROP_SUPPORTED_EXTENSIONS
 
 
 def _process_image_item(args):
-    input_item_path, output_dir, overwrite, rule, ratio, padding_percent, reference, method, min_face_width, min_face_height, model_path, crop_script_path = args
+    input_item_path, output_dir, overwrite, rule, ratio, padding_percent, reference, method, min_face_width, min_face_height, model_path, crop_script_path, suppress_output = args
     item = os.path.basename(input_item_path)
     
     try:
         file_name, file_extension = os.path.splitext(item)
         if file_extension.lower() in CROP_SUPPORTED_EXTENSIONS:
-            print(f"Processing '{item}'...")
+            if not suppress_output:
+                print(f"Processing '{item}'...")
 
             command = [
                 sys.executable,
@@ -55,12 +56,14 @@ def _process_image_item(args):
                 output_message += f"\\n  Output:\\n{process.stdout.strip()}"
             if process.stderr:
                 output_message += f"\\n  Error output:\\n{process.stderr.strip()}"
-            print(output_message)
-            print("-" * 30)
+            if not suppress_output:
+                print(output_message)
+                print("-" * 30)
             return None
         else:
-            print(f"Skipping '{item}' (unsupported extension).")
-            print("-" * 30)
+            if not suppress_output:
+                print(f"Skipping '{item}' (unsupported extension).")
+                print("-" * 30)
             return f"Skipped '{item}' (unsupported extension)."
     except subprocess.CalledProcessError as e:
         error_message = f"Error processing '{item}':"
@@ -68,13 +71,15 @@ def _process_image_item(args):
             error_message += f"\\n  Standard output:\\n{e.stdout.strip()}"
         if e.stderr:
             error_message += f"\\n  Standard error:\\n{e.stderr.strip()}"
-        print(error_message)
-        print("-" * 30)
+        if not suppress_output:
+            print(error_message)
+            print("-" * 30)
         return error_message
     except Exception as e:
         error_message = f"Unexpected error processing '{item}': {e}"
-        print(error_message)
-        print("-" * 30)
+        if not suppress_output:
+            print(error_message)
+            print("-" * 30)
         return error_message
 
 
@@ -127,7 +132,7 @@ def run(
             tasks.append((
                 input_item_path, output_dir, overwrite, rule, ratio, 
                 padding_percent, reference, method, min_face_width, 
-                min_face_height, model_path, crop_script_path
+                min_face_height, model_path, crop_script_path, True
             ))
         else:
             print(f"Skipping '{item}' (directory).")

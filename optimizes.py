@@ -14,9 +14,10 @@ from optimize import (
 SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp")
 
 
-def process_image(input_item_path, output_dir, jpg_quality, webp_quality, lossless, overwrite, optimize_script_path):
+def process_image(input_item_path, output_dir, jpg_quality, webp_quality, lossless, overwrite, optimize_script_path, suppress_output=False):
     item = os.path.basename(input_item_path)
-    print(f"Processing '{item}'...")
+    if not suppress_output:
+        print(f"Processing '{item}'...")
 
     command = [
         sys.executable,
@@ -42,26 +43,32 @@ def process_image(input_item_path, output_dir, jpg_quality, webp_quality, lossle
             text=True,
             encoding="utf-8",
         )
+        output_message = ""
         if process.stdout:
-            print(f"  Output for {item}:\n{process.stdout.strip()}")
+            output_message += f"  Output for {item}:\\n{process.stdout.strip()}"
         if process.stderr:
-            print(
-                f"  Error output for {item}:\n{process.stderr.strip()}",
-                file=sys.stderr,
-            )
-        print(f"'{item}' processed successfully.")
-        return f"'{item}' processed successfully."
+            output_message += f"  Error output for {item}:\\n{process.stderr.strip()}"
+        
+        if not suppress_output:
+            if output_message:
+                print(output_message)
+            print(f"'{item}' processed successfully.")
+        
+        # Return a success message, potentially with output/error details if not suppressed
+        return f"'{item}' processed successfully." + (f"\\n{output_message}" if output_message and suppress_output else "")
     except subprocess.CalledProcessError as e:
         error_message = f"Error processing '{item}':"
         if e.stdout:
             error_message += f"\\n  Standard output:\\n{e.stdout.strip()}"
         if e.stderr:
             error_message += f"\\n  Standard error:\\n{e.stderr.strip()}"
-        print(error_message)
+        if not suppress_output:
+            print(error_message)
         return error_message
     except Exception as e:
         error_message = f"Unexpected error processing '{item}': {e}"
-        print(error_message)
+        if not suppress_output:
+            print(error_message)
         return error_message
 
 
@@ -117,20 +124,33 @@ def run(
                             lossless,
                             overwrite,
                             optimize_script_path,
+                            True,  # suppress_output = True
                         )
                     )
                 else:
-                    print(f"Skipping '{item}' (unsupported extension).")
+                    if not futures_list: # Only print if not using progress bar for other files
+                        print(f"Skipping '{item}' (unsupported extension).")
             else:
-                print(f"Skipping '{item}' (directory).")
+                if not futures_list: # Only print if not using progress bar for other files
+                    print(f"Skipping '{item}' (directory).")
 
-        # Wrap as_completed with tqdm for progress bar
-        for future in tqdm(concurrent.futures.as_completed(futures_list), total=len(futures_list), desc="Optimizing images"):
-            try:
-                result = future.result()
-                # print(result) # 이미 process_image 함수 내부에서 출력하므로 주석 처리
-            except Exception as exc:
-                print(f"A task generated an exception: {exc}")
+        results_summary = []
+        if futures_list:
+            for future in tqdm(concurrent.futures.as_completed(futures_list), total=len(futures_list), desc="Optimizing images"):
+                try:
+                    result = future.result()
+                    if result: # Collect results that might contain error messages or important info
+                        results_summary.append(result)
+                except Exception as exc:
+                    # Construct a message similar to what process_image would return for an exception
+                    # This part might need adjustment based on how you want to identify the failing task
+                    item_name = "Unknown item" # Placeholder, ideally get from future if possible
+                    error_msg = f"A task for {item_name} generated an exception: {exc}"
+                    print(error_msg)
+                    results_summary.append(error_msg)
+        
+        for summary in results_summary:
+            print(summary)
             print("-" * 30)
 
     print("All tasks completed.")
