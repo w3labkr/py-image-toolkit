@@ -254,11 +254,12 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/windows,macos,visualstudiocode,python
 
 
-# Ignore all files in the input and output folders
-input/
+# Ignore all files in the input folder
+input/*
+!input/.gitkeep
+
+# Ignore all files in the output folder
 output/
-cropped/
-resized/
 
 # Yunet files
 *.onnx
