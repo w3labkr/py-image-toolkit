@@ -4,6 +4,7 @@ import subprocess
 import sys
 import argparse
 import multiprocessing
+from tqdm import tqdm
 from resize import (
     RESIZE_SUPPORTED_EXTENSIONS,
     RESIZE_FILTER_NAMES,
@@ -117,7 +118,7 @@ def run(
     print("-" * 30)
 
     with multiprocessing.Pool(processes=num_processes) as pool:
-        results = pool.map(process_image, tasks)
+        results = list(tqdm(pool.imap(process_image, tasks), total=len(tasks), desc="Resizing images"))
 
     print("-" * 30)
     for success_msg, error_msg in results:

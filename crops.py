@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import multiprocessing
+from tqdm import tqdm
 from crop import get_parser, CROP_SUPPORTED_EXTENSIONS
 
 
@@ -145,7 +146,7 @@ def run(
 
 
     with multiprocessing.Pool(processes=num_processes) as pool:
-        results = pool.map(_process_image_item, tasks)
+        results = list(tqdm(pool.imap(_process_image_item, tasks), total=len(tasks), desc="Processing images"))
 
     for result in results:
         if result: # Print errors or skip messages that were returned

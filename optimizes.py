@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import concurrent.futures
+from tqdm import tqdm
 from optimize import (
     OPTIMIZE_JPG_QUALITY,
     OPTIMIZE_WEBP_QUALITY,
@@ -98,13 +99,15 @@ def run(
     print("-" * 30)
 
     tasks = []
+    # Initialize futures_list here to ensure it's always a list
+    futures_list = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
         for item in os.listdir(input_dir):
             input_item_path = os.path.join(input_dir, item)
             if os.path.isfile(input_item_path):
                 file_name, file_extension = os.path.splitext(item)
                 if file_extension.lower() in SUPPORTED_EXTENSIONS:
-                    tasks.append(
+                    futures_list.append(
                         executor.submit(
                             process_image,
                             input_item_path,
@@ -121,7 +124,8 @@ def run(
             else:
                 print(f"Skipping '{item}' (directory).")
 
-        for future in concurrent.futures.as_completed(tasks):
+        # Wrap as_completed with tqdm for progress bar
+        for future in tqdm(concurrent.futures.as_completed(futures_list), total=len(futures_list), desc="Optimizing images"):
             try:
                 result = future.result()
                 # print(result) # 이미 process_image 함수 내부에서 출력하므로 주석 처리

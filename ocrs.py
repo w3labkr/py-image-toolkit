@@ -4,10 +4,12 @@ import subprocess
 import sys
 import argparse
 import multiprocessing
+from tqdm import tqdm
 from ocr import OCR_SUPPORTED_EXTENSIONS
 
 
-def process_image(input_item_path, item_name, paddleocr_cli_args, ocr_script_path):
+def process_image(args_tuple):
+    input_item_path, item_name, paddleocr_cli_args, ocr_script_path = args_tuple
     file_name, file_extension = os.path.splitext(item_name)
     if file_extension.lower() in OCR_SUPPORTED_EXTENSIONS:
         print(f"Processing '{item_name}'...")
@@ -74,7 +76,7 @@ def run(input_dir, paddleocr_cli_args):
     num_processes = os.cpu_count() or 4 
 
     with multiprocessing.Pool(processes=num_processes) as pool:
-        results = pool.starmap(process_image, tasks)
+        results = list(tqdm(pool.imap(process_image, tasks), total=len(tasks), desc="Performing OCR"))
 
     for result in results:
         if result: # process_image can return None for skipped directories
