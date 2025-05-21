@@ -203,7 +203,7 @@ Key Options for `crop`:
 - `--min-face-width`: Min face width in pixels (Default: `30`).
 - `--min-face-height`: Min face height in pixels (Default: `30`).
 - `-r, --ratio`: Target crop aspect ratio (e.g., '16:9', '1.0', 'None') (Default: `None`).
-- `--rule`: Composition rule(s) (`thirds`, `golden`, `both`). (Default: `both`).
+- `--rule`: Composition rule(s) (`thirds`, `golden`, `both`, `none`). (Default: `both`).
 - `-p, --padding-percent`: Padding percentage around crop (%) (Default: `5.0`).
 - `--yunet-model-path`: Path to the YuNet ONNX model file. If not specified, it defaults to `models/face_detection_yunet_2023mar.onnx` and will be downloaded if missing.
 
@@ -252,7 +252,7 @@ Key Options for `batch_crop`:
 - `--min-face-width`: Min face width in pixels (Default: `30`).
 - `--min-face-height`: Min face height in pixels (Default: `30`).
 - `-r, --ratio`: Target crop aspect ratio (e.g., '16:9', '1.0', 'None') (Default: `None`).
-- `--rule`: Composition rule(s) (`thirds`, `golden`, `both`). (Default: `both`).
+- `--rule`: Composition rule(s) (`thirds`, `golden`, `both`, `none`). (Default: `both`).
 - `-p, --padding-percent`: Padding percentage around crop (%) (Default: `5.0`).
 - `--yunet-model-path`: Path to the YuNet ONNX model file. If not specified, it defaults to `models/face_detection_yunet_2023mar.onnx` and will be downloaded if missing.
 
@@ -337,6 +337,7 @@ Key Options for `batch_optimize`:
 - `--jpg-quality`: JPEG image quality setting (1-100, default: `85`).
 - `--webp-quality`: WebP image quality (1-100, default: `85`, ignored when `--lossless` option is used).
 - `--lossless`: Use lossless compression for WebP (ignores WebP quality setting).
+- `--max-workers`: Maximum number of processes to use for parallel processing (default: number of CPUs).
 
 Examples for `batch_optimize`:
 
@@ -415,13 +416,23 @@ python ocrs.py <input_dir> [options]
 Key Options for `batch_ocr`:
 
 - `input_dir`: (Required) Path to the directory containing image files to process.
-- `--lang`: OCR language (default: `korean`). Refer to PaddleOCR documentation for supported languages.
-- `--rec_model_dir`: Path to the recognition model directory (default: `./models/ko_PP-OCRv3_rec_infer`).
-- `--det_model_dir`: Path to the detection model directory (default: `./models/ch_PP-OCRv3_det_infer`).
-- `--cls_model_dir`: Path to the direction classification model directory (default: `./models/ch_ppocr_mobile_v2.0_cls_infer`).
-- `--use_gpu`: Whether to use GPU for OCR processing (default: `False`).
-- (Other PaddleOCR specific options from `ocr.py` can also be used)
-- `--show_log`: Whether to display PaddleOCR's internal logs (default: `False`).
+- `-o, --output-dir`: Directory to save the output CSV files (passed to `ocr.py`). `ocr.py` default: `output`.
+- `--lang`: OCR language (default: `korean`). (`ocr.py` default)
+- `--rec_model_dir`: Path to the recognition model directory (default: `./models/ko_PP-OCRv3_rec_infer`). (`ocr.py` default)
+- `--det_model_dir`: Path to the detection model directory (default: `./models/ch_PP-OCRv3_det_infer`). (`ocr.py` default)
+- `--cls_model_dir`: Path to the direction classification model directory (default: `./models/ch_ppocr_mobile_v2.0_cls_infer`). (`ocr.py` default)
+- `--use_gpu`: Whether to use GPU for OCR processing (default: `False`). (`ocr.py` default)
+- `--rec_char_dict_path`: Path to recognition character dictionary (default: `None`, uses PaddleOCR default). (`ocr.py` default)
+- `--rec_batch_num`: Recognition batch size (default: `6`). (`ocr.py` default)
+- `--det_db_thresh`: Detection DB threshold (default: `0.4`). (`ocr.py` default)
+- `--det_db_box_thresh`: Detection DB box threshold (default: `0.6`). (`ocr.py` default)
+- `--det_db_unclip_ratio`: Detection DB unclip ratio (default: `1.8`). (`ocr.py` default)
+- `--drop_score`: Drop score for text detection (default: `0.6`). (`ocr.py` default)
+- `--cls_thresh`: Classification threshold (default: `0.9`). (`ocr.py` default)
+- `--use_angle_cls`: Whether to use angle classification (default: `False`). (`ocr.py` default)
+- `--use_space_char`: Whether to use space character (default: `True`). (`ocr.py` default)
+- `--use_dilation`: Whether to use dilation on text regions (default: `True`). (`ocr.py` default)
+- `--show_log`: Whether to display PaddleOCR's internal logs (default: `False`). (`ocr.py` default)
 
 Examples for `batch_ocr`:
 

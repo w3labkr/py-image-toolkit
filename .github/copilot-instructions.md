@@ -4,7 +4,7 @@ This file provides guidelines for GitHub Copilot to reference when performing co
 
 ## General Guidelines
 
-* **Response Language**: Please provide all suggestions and responses in **Korean**.
+* **Response Language**: Please provide all suggestions and responses in **English**.
 * **Maintain Context**: Understand and utilize the context based on the current file you are working on, surrounding code, and other related open files when suggesting code.
 * **Adhere to Code Style**: Identify the project's existing code style (indentation, naming conventions, etc.) and generate code with consistent styling.
 * **Avoid Unnecessary Comments**: When generating code, **do not add comments.** Developers will add comments manually as needed.
