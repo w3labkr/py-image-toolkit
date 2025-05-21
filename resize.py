@@ -31,10 +31,10 @@ try:
     }
 except AttributeError:
     _PIL_RESAMPLE_FILTERS = {
-        "lanczos": Image.LANCZOS,
-        "bicubic": Image.BICUBIC,
-        "bilinear": Image.BILINEAR,
-        "nearest": Image.NEAREST,
+        "lanczos": Image.LANCZOS, # type: ignore
+        "bicubic": Image.BICUBIC, # type: ignore
+        "bilinear": Image.BILINEAR, # type: ignore
+        "nearest": Image.NEAREST, # type: ignore
     }
 
 
