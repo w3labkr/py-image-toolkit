@@ -3,7 +3,6 @@ import os
 import subprocess
 import sys
 import argparse
-import multiprocessing
 from tqdm import tqdm
 from ocr import OCR_SUPPORTED_EXTENSIONS
 
@@ -11,10 +10,11 @@ from ocr import OCR_SUPPORTED_EXTENSIONS
 def process_image(args_tuple):
     input_item_path, item_name, paddleocr_cli_args, ocr_script_path, suppress_output = args_tuple
     file_name, file_extension = os.path.splitext(item_name)
-    if file_extension.lower() in OCR_SUPPORTED_EXTENSIONS:
-        if not suppress_output:
-            print(f"Processing '{item_name}'...")
 
+    if item_name == ".DS_Store" or item_name == ".gitkeep":
+        return None
+
+    if file_extension.lower() in OCR_SUPPORTED_EXTENSIONS:
         command = [sys.executable, ocr_script_path, input_item_path]
         command.extend(paddleocr_cli_args)
 
@@ -26,78 +26,52 @@ def process_image(args_tuple):
                 text=True,
                 encoding="utf-8",
             )
-            output = f"Successfully processed '{item_name}'."
-            if process.stdout:
-                output += f"\\n  Output:\\n{process.stdout.strip()}"
-            if process.stderr:
-                output += f"\\n  Error output:\\n{process.stderr.strip()}"
-            if not suppress_output:
-                print(output)
-                print("-" * 30)
-            return output if suppress_output else None # Return output for summary, but don't print if suppressed
+            return process.stdout.strip() if process.stdout else ""
         except subprocess.CalledProcessError as e:
             error_output = f"Error processing '{item_name}':"
             if e.stdout:
                 error_output += f"\\n  Standard output:\\n{e.stdout.strip()}"
             if e.stderr:
                 error_output += f"\\n  Standard error:\\n{e.stderr.strip()}"
-            if not suppress_output:
-                print(error_output)
-                print("-" * 30)
             return error_output
         except Exception as e:
             error_message = f"Unexpected error processing '{item_name}': {e}"
-            if not suppress_output:
-                print(error_message)
-                print("-" * 30)
             return error_message
     else:
-        skip_message = f"Skipping '{item_name}' (unsupported extension)."
-        if not suppress_output:
-            print(skip_message)
-            print("-" * 30)
-        return skip_message
+        return None
 
 
 def run(input_dir, paddleocr_cli_args):
     if not os.path.isdir(input_dir):
-        print(f"Input path '{input_dir}' is not a valid directory.")
         sys.exit(1)
 
     ocr_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ocr.py")
     if not os.path.isfile(ocr_script_path):
-        print(
-            f"'ocr.py' script not found. It should be in the same directory as 'ocrs.py'."
-        )
         sys.exit(1)
 
-    print(f"Input directory: {input_dir}")
-    print(f"PaddleOCR arguments (passed to ocr.py): {' '.join(paddleocr_cli_args)}")
-    print("-" * 30)
-
-    tasks = []
-    for item in os.listdir(input_dir):
-        input_item_path = os.path.join(input_dir, item)
+    file_tasks = []
+    skipped_directories_count = 0
+    for item_name in os.listdir(input_dir):
+        input_item_path = os.path.join(input_dir, item_name)
         if os.path.isfile(input_item_path):
-            tasks.append((input_item_path, item, paddleocr_cli_args, ocr_script_path, True)) # Add suppress_output=True
+            file_tasks.append((input_item_path, item_name, paddleocr_cli_args, ocr_script_path, True))
         else:
-            print(f"Skipping '{item}' (directory).")
-            print("-" * 30)
+            skipped_directories_count += 1
 
-    # Determine the number of processes to use, e.g., number of CPU cores
-    # Or a fixed number, e.g., 4. For CPU-bound tasks, os.cpu_count() is a good default.
-    # For I/O bound tasks or tasks that release GIL, more processes might be beneficial.
-    # Let's use os.cpu_count() or a sensible default if it's None.
-    num_processes = os.cpu_count() or 4 
+    successful_ocr_count = 0
+    skipped_files_count = 0
 
-    with multiprocessing.Pool(processes=num_processes) as pool:
-        results = list(tqdm(pool.imap(process_image, tasks), total=len(tasks), desc="Performing OCR"))
+    for task in tqdm(file_tasks, desc="Performing OCR"):
+        result = process_image(task)
+        if result is None:
+            skipped_files_count += 1
+        elif not (result.startswith("Error processing") or result.startswith("Unexpected error processing")):
+            successful_ocr_count += 1
 
-    for result in results:
-        if result: # Print errors or skip messages that were returned
-            print(result) # Print summary of errors/skips after progress bar
-            print("-" * 30)
-
+    total_skipped_items = skipped_directories_count + skipped_files_count
+    
+    print(f"{successful_ocr_count} file(s) processed successfully.")
+    print(f"{total_skipped_items} additional item(s) skipped (unsupported or directory).")
     print("All tasks completed.")
 
 
@@ -108,6 +82,12 @@ def get_parser():
 
     parser.add_argument(
         "input_dir", help="Input directory path containing images for OCR"
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",  # 변경된 옵션 이름
+        type=str,
+        help="Directory to save the output CSV files (passed to ocr.py). ocr.py default: output",
     )
 
     paddleocr_group = parser.add_argument_group(
@@ -199,6 +179,12 @@ def main():
 
         value = getattr(args, action.dest)
 
+        if action.dest == "output_dir":
+            if value is not None:
+                paddleocr_cli_args.append(action.option_strings[0])
+                paddleocr_cli_args.append(str(value))
+            continue
+
         if isinstance(action, argparse._StoreTrueAction):
             if value:
                 paddleocr_cli_args.append(action.option_strings[0])
@@ -214,8 +200,16 @@ def main():
                     paddleocr_cli_args.append(no_option_flag)
 
         elif value is not None:
-            paddleocr_cli_args.append(action.option_strings[0])
-            paddleocr_cli_args.append(str(value))
+            is_paddleocr_arg = False
+            for group_action in parser._action_groups:
+                if group_action.title == "PaddleOCR Arguments (passed to ocr.py)":
+                    if action in group_action._group_actions:
+                        is_paddleocr_arg = True
+                        break
+            if is_paddleocr_arg:
+                paddleocr_cli_args.append(action.option_strings[0])
+                paddleocr_cli_args.append(str(value))
+
 
     paddleocr_cli_args.extend(unknown_args)
 

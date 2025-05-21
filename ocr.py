@@ -1,70 +1,71 @@
 # -*- coding: utf-8 -*-
 import os
 import sys
-import re
-from paddleocr import PaddleOCR
 import argparse
+import csv
+import re
 import traceback
+from paddleocr import PaddleOCR
 
 LABELS = {
-    "O": ["기타"],  # Other: 특별한 의미가 없는 기타 텍스트 또는 배경 요소
-    "name": ["이름", "성명"],  # 성명: 개인의 이름 (예: 홍길동)
+    "O": ["기타"],
+    "name": ["이름", "성명"],
     "rrn": [
         "주민등록번호",
         "주민번호",
-    ],  # 주민등록번호 (Resident Registration Number): 개인 식별 번호 (예: 123456-1234567)
+    ],
     "issue_date": [
         "발급일",
         "작성일",
         "발행일",
-    ],  # 발급일: 문서가 발행된 날짜 (예: 2023-05-15)
+    ],
     "expiration_date": [
         "만료일",
         "유효기간",
-    ],  # 만료일: 문서나 자격의 유효기간이 끝나는 날짜
-    "address": ["주소", "거주지", "소재지"],  # 주소: 현재 거주지 또는 사업장 주소
-    "previous_address": ["이전주소", "전주소"],  # 이전 주소: 변경 전 주소
+    ],
+    "address": ["주소", "거주지", "소재지"],
+    "previous_address": ["이전주소", "전주소"],
     "department": [
         "부서",
         "소속부서",
         "학과",
         "부",
-    ],  # 부서: 조직 내의 특정 부서명 (예: 인사팀, 재무부, 학과)
+    ],
     "position": [
         "직책",
         "직위",
         "담당",
         "급",
-    ],  # 직위/직책: 조직 내에서의 역할이나 직급 (예: 과장, 팀장, 교수)
+    ],
     "organization": [
         "소속",
         "학교명",
         "회사명",
         "기관명",
         "단체명",
-    ],  # 소속/기관명: 개인이 속한 회사, 학교, 단체 등의 이름 (예: ㈜한국데이터, 서울대학교)
+    ],
     "employment_status": [
         "재직",
         "휴직",
         "퇴직",
         "고용상태",
-    ],  # 재직 상태: 고용 상태 (예: 재직, 휴직, 퇴직)
+    ],
     "employment_date": [
         "입사일",
         "임용일",
         "채용일",
-    ],  # 입사일/임용일: 조직에 고용되거나 임용된 날짜
+    ],
     "retirement_date": [
         "퇴직일",
         "면직일",
         "해고일",
-    ],  # 퇴직일/면직일: 조직에서 퇴사하거나 면직된 날짜
+    ],
     "issuer": [
         "발급기관",
         "발행처",
         "기관명",
         "발급자",
-    ],  # 발급기관: 문서를 발행한 기관이나 단체 (예: 서울특별시청, 한국산업인력공단)
+    ],
     "document_title": [
         "주민등록증",
         "문서명",
@@ -74,29 +75,29 @@ LABELS = {
         "공무원증",
         "여권",
         "신분증",
-    ],  # 문서명: 해당 문서의 제목 (예: 사업자등록증, 졸업증명서, 공문)
+    ],
     "id_number": [
         "문서번호",
         "번호",
         "등록번호",
         "관리번호",
-    ],  # 문서번호/식별번호: 문서 자체의 고유 번호나 관리 번호 (예: 제2023-123호)
+    ],
     "signature": [
         "서명",
         "직인",
         "날인",
         "도장",
-    ],  # 서명/직인: 개인의 서명 또는 기관의 도장(직인)이 있는 영역
+    ],
     "valid_period": [
         "유효기간",
         "사용기한",
-    ],  # 유효 기간: 특정 권리나 자격이 유효한 전체 기간 (시작일 ~ 종료일 형태 포함)
+    ],
     "note": [
         "비고",
         "주의사항",
         "특이사항",
         "참고사항",
-    ],  # 비고/특이사항: 기타 참고해야 할 내용이나 특별한 조건
+    ],
 }
 
 OCR_SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tiff", ".webp")
@@ -109,23 +110,15 @@ def extract_text_items_with_paddleocr(image_path_arg, paddleocr_args):
 
         extracted_items = []
         if result and result[0] is not None:
-            for line_info in result[0]:
-                if (
-                    len(line_info) == 2
-                    and isinstance(line_info[1], tuple)
-                    and len(line_info[1]) == 2
-                ):
-                    text_content = line_info[1][0]
-                    confidence = line_info[1][1]
-                    box = line_info[0]
-                    extracted_items.append(
-                        {
-                            "text": text_content,
-                            "confidence": confidence,
-                            "box": box,
-                            "label": "O",
-                        }
-                    )
+            for item_info in result[0]:
+                text_region = item_info[0]
+                text_content, text_confidence = item_info[1]
+                extracted_items.append({
+                    "text": text_content,
+                    "confidence": text_confidence,
+                    "box": text_region,
+                    "label": "O"
+                })
         return extracted_items
     except ImportError as ie:
         print(
@@ -133,7 +126,7 @@ def extract_text_items_with_paddleocr(image_path_arg, paddleocr_args):
         )
         return []
     except Exception as e:
-        print(f"Unexpected error occurred while processing '{image_path_arg}': {e}")
+        print(f"An unexpected error occurred while processing '{image_path_arg}': {e}")
         if paddleocr_args.show_log:
             traceback.print_exc()
         return []
@@ -443,42 +436,63 @@ def process_image_file(image_file_path, paddleocr_args):
     extracted_data = extract_text_items_with_paddleocr(image_file_path, paddleocr_args)
 
     if not extracted_data:
-        return f"--- No text extracted for '{os.path.basename(image_file_path)}' ---"
+        print(f"--- No text extracted for '{os.path.basename(image_file_path)}' ---")
+        return None
 
     labeled_data = apply_labeling_heuristics(extracted_data)
     final_output_data = merge_and_format_items(labeled_data)
-
-    output_lines = [
-        f"\n--- Extraction Results for '{os.path.basename(image_file_path)}' ---"
-    ]
-
-    desired_output_fields = [
-        (LABELS.get("document_title", ["문서 제목"])[0], "document_title"),
-        (LABELS.get("name", ["이름"])[0], "name"),
-        (LABELS.get("address", ["주소"])[0], "address"),
-        (LABELS.get("rrn", ["주민등록번호"])[0], "rrn"),
-        (LABELS.get("issue_date", ["발급일"])[0], "issue_date"),
-        (LABELS.get("issuer", ["발급기관"])[0], "issuer"),
-    ]
-
-    for header_text, internal_label in desired_output_fields:
-        item_data = final_output_data.get(internal_label)
-        value_to_print = item_data["text"] if item_data and "text" in item_data else ""
-        output_lines.append(f'"{header_text}": {value_to_print}')
-
-    return "\n".join(output_lines)
+    return final_output_data
 
 
-def run(input_path_to_process, paddleocr_args):
+def run(input_path_to_process, paddleocr_args, output_dir):
     if not os.path.exists(input_path_to_process):
-        print(f"The specified path '{input_path_to_process}' cannot be found.")
+        print(f"지정된 경로 '{input_path_to_process}'를 찾을 수 없습니다.")
         sys.exit(1)
 
     if os.path.isfile(input_path_to_process):
         if input_path_to_process.lower().endswith(OCR_SUPPORTED_EXTENSIONS):
-            result_string = process_image_file(input_path_to_process, paddleocr_args)
-            if result_string:
-                print(result_string)
+            processed_data = process_image_file(input_path_to_process, paddleocr_args)
+            if processed_data:
+                os.makedirs(output_dir, exist_ok=True)
+                output_csv_path = os.path.join(output_dir, "ocr.csv")
+                file_exists = os.path.exists(output_csv_path) and os.path.getsize(output_csv_path) > 0
+
+                fieldnames_kr = [LABELS.get("filename", ["파일명"])[0]] + [
+                    LABELS.get("document_title", ["문서 제목"])[0],
+                    LABELS.get("name", ["이름"])[0],
+                    LABELS.get("address", ["주소"])[0],
+                    LABELS.get("rrn", ["주민등록번호"])[0],
+                    LABELS.get("issue_date", ["발급일"])[0],
+                    LABELS.get("issuer", ["발급기관"])[0],
+                ]
+                fieldnames_en = ["filename"] + [
+                    "document_title",
+                    "name",
+                    "address",
+                    "rrn",
+                    "issue_date",
+                    "issuer",
+                ]
+
+                try:
+                    with open(
+                        output_csv_path, "a", newline="", encoding="utf-8-sig"
+                    ) as csvfile:
+                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames_kr)
+                        if not file_exists:
+                            writer.writeheader()
+
+                        row_data = {LABELS.get("filename", ["파일명"])[0]: os.path.basename(input_path_to_process)}
+                        for kr, en in zip(fieldnames_kr[1:], fieldnames_en[1:]):
+                            item_data = processed_data.get(en)
+                            if item_data and isinstance(item_data, dict) and item_data.get("text"):
+                                row_data[kr] = item_data["text"]
+                            else:
+                                row_data[kr] = ""
+                        writer.writerow(row_data)
+                    print(f"The result has been saved to '{output_csv_path}'.")
+                except IOError as e:
+                    print(f"Error occurred while writing the file: {e}")
         else:
             print(
                 f"File '{input_path_to_process}' is not a supported image file. Supported extensions: {OCR_SUPPORTED_EXTENSIONS}"
@@ -493,9 +507,17 @@ def run(input_path_to_process, paddleocr_args):
 
 def get_parser():
     parser = argparse.ArgumentParser(
-        description="Extracts text from images using PaddleOCR and applies labeling heuristics. Processes a single image file."
+        description="Extract text from an image and apply labeling heuristics using PaddleOCR. Processes a single image file."
     )
     parser.add_argument("input_file", help="Path to the image file to process.")
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        type=str,
+        default="output",
+        help="Directory to save the output CSV file. Default: output",
+        dest="output_dir"
+    )
 
     # PaddleOCR arguments
     paddleocr_group = parser.add_argument_group(
@@ -602,6 +624,7 @@ def main():
     args = parser.parse_args()
 
     input_file_arg = args.input_file
+    output_dir_arg = args.output_dir
 
     paddleocr_args = argparse.Namespace()
     paddleocr_group = next(
@@ -610,7 +633,7 @@ def main():
     for action in paddleocr_group._group_actions:
         setattr(paddleocr_args, action.dest, getattr(args, action.dest))
 
-    run(input_file_arg, paddleocr_args)
+    run(input_file_arg, paddleocr_args, output_dir_arg)
 
 
 if __name__ == "__main__":
