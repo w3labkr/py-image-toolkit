@@ -9,7 +9,7 @@ import argparse
 import time
 import sys
 import requests
-import collections.abc # collections.abc를 임포트합니다.
+import collections.abc
 
 YUNET_MODEL_FILENAME: str = "face_detection_yunet_2023mar.onnx"
 YUNET_MODEL_URL: str = (
@@ -130,12 +130,9 @@ def detect_faces_dnn(
 
         if faces is not None and faces[1] is not None:
             for face_info in faces[1]:
-                if not isinstance(face_info, collections.abc.Sequence):
-                    print(f"Warning: Skipping non-sequence face data (type: {type(face_info)}).")
-                    continue
-                
-                if len(face_info) < 15:
-                    print(f"Warning: face_info data is too short (len: {len(face_info)}, expected 15). Skipping.")
+                if not isinstance(face_info, np.ndarray) or face_info.ndim != 1 or face_info.shape[0] < 15:
+                    actual_shape = face_info.shape if isinstance(face_info, np.ndarray) else "N/A"
+                    print(f"Warning: Skipping invalid face data (type: {type(face_info)}, shape: {actual_shape}). Expected 1D np.ndarray with at least 15 elements.")
                     continue
 
                 x, y, w, h = (

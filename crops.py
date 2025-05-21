@@ -51,13 +51,13 @@ def _process_image_item(args):
                 text=True,
                 encoding="utf-8",
             )
-            output_message = f"Successfully processed '{item}'."
-            if process.stdout:
-                output_message += f"\\n  Output:\\n{process.stdout.strip()}"
-            if process.stderr:
-                output_message += f"\\n  Error output:\\n{process.stderr.strip()}"
             if not suppress_output:
-                print(output_message)
+                output_message_display = f"Successfully processed '{item}'."
+                if process.stdout:
+                    output_message_display += f"\n  Output:\n{process.stdout.strip()}"
+                if process.stderr:
+                    output_message_display += f"\n  Process stderr:\n{process.stderr.strip()}"
+                print(output_message_display)
                 print("-" * 30)
             return None
         else:
@@ -68,9 +68,9 @@ def _process_image_item(args):
     except subprocess.CalledProcessError as e:
         error_message = f"Error processing '{item}':"
         if e.stdout:
-            error_message += f"\\n  Standard output:\\n{e.stdout.strip()}"
+            error_message += f"\n  Standard output:\n{e.stdout.strip()}"
         if e.stderr:
-            error_message += f"\\n  Standard error:\\n{e.stderr.strip()}"
+            error_message += f"\n  Standard error:\n{e.stderr.strip()}"
         if not suppress_output:
             print(error_message)
             print("-" * 30)
@@ -113,10 +113,11 @@ def run(
 
     display_model_path = model_path
     if model_path and os.path.isabs(model_path):
-        display_model_path = os.path.relpath(model_path)
+        try:
+            display_model_path = os.path.relpath(model_path)
+        except ValueError:
+            pass
 
-    print(f"Input directory: {os.path.relpath(input_dir)}")
-    print(f"Output directory: {os.path.relpath(output_dir)}")
     print(
         f"Overwrite: {overwrite}, Rule: {rule}, Ratio: {ratio}, Padding: {padding_percent}%, Reference: {reference}, Subject selection method: {method}"
     )
@@ -126,6 +127,7 @@ def run(
     print("-" * 30)
 
     tasks = []
+    skipped_directories_count = 0
     for item in os.listdir(input_dir):
         input_item_path = os.path.join(input_dir, item)
         if os.path.isfile(input_item_path):
@@ -135,29 +137,32 @@ def run(
                 min_face_height, model_path, crop_script_path, True
             ))
         else:
-            print(f"Skipping '{item}' (directory).")
-            print("-" * 30)
+            skipped_directories_count += 1
+
+    successful_processed_count = 0
+    skipped_unsupported_files_count = 0
 
     if not tasks:
-        print("No image files found to process.")
-        print("All tasks completed.")
-        return
+        pass
+    else:
+        num_processes = min(multiprocessing.cpu_count(), len(tasks))
 
-    # Determine the number of processes to use
-    # Default to the number of CPU cores, but not more than the number of tasks
-    num_processes = min(multiprocessing.cpu_count(), len(tasks))
-    print(f"Using {num_processes} processes for parallel execution.")
-    print("-" * 30)
+        with multiprocessing.Pool(processes=num_processes) as pool:
+            results = list(tqdm(pool.imap(_process_image_item, tasks), total=len(tasks), desc="Processing images"))
 
+        for result in results:
+            if result is None:
+                successful_processed_count += 1
+            elif isinstance(result, str) and result.startswith("Skipped"):
+                skipped_unsupported_files_count += 1
+            elif result:
+                pass
 
-    with multiprocessing.Pool(processes=num_processes) as pool:
-        results = list(tqdm(pool.imap(_process_image_item, tasks), total=len(tasks), desc="Processing images"))
-
-    for result in results:
-        if result: # Print errors or skip messages that were returned
-            # Errors/skip messages are already printed within _process_image_item
-            pass
-
+    print(f"{successful_processed_count} file(s) processed successfully.")
+    
+    total_skipped_items = skipped_directories_count + skipped_unsupported_files_count
+    if total_skipped_items > 0:
+        print(f"{total_skipped_items} additional item(s) skipped (unsupported or directory).")
 
     print("All tasks completed.")
 
