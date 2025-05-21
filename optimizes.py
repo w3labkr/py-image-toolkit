@@ -16,8 +16,6 @@ SUPPORTED_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".webp
 
 def process_image(input_item_path, output_dir, jpg_quality, webp_quality, lossless, overwrite, optimize_script_path, suppress_output=False):
     item = os.path.basename(input_item_path)
-    if not suppress_output:
-        print(f"Processing '{item}'...")
 
     command = [
         sys.executable,
@@ -43,32 +41,29 @@ def process_image(input_item_path, output_dir, jpg_quality, webp_quality, lossle
             text=True,
             encoding="utf-8",
         )
-        output_message = ""
-        if process.stdout:
-            output_message += f"  Output for {item}:\\n{process.stdout.strip()}"
-        if process.stderr:
-            output_message += f"  Error output for {item}:\\n{process.stderr.strip()}"
-        
-        if not suppress_output:
+        if suppress_output:
+            return None 
+        else:
+            output_message = ""
+            if process.stdout:
+                output_message += f"  Output for {item}:\n{process.stdout.strip()}"
+            if process.stderr: 
+                output_message += f"  Error output for {item}:\n{process.stderr.strip()}"
             if output_message:
                 print(output_message)
             print(f"'{item}' processed successfully.")
-        
-        # Return a success message, potentially with output/error details if not suppressed
-        return f"'{item}' processed successfully." + (f"\\n{output_message}" if output_message and suppress_output else "")
+            return f"'{item}' processed successfully."
+
     except subprocess.CalledProcessError as e:
         error_message = f"Error processing '{item}':"
         if e.stdout:
-            error_message += f"\\n  Standard output:\\n{e.stdout.strip()}"
+            error_message += f"\n  optimize.py stdout:\n{e.stdout.strip()}"
         if e.stderr:
-            error_message += f"\\n  Standard error:\\n{e.stderr.strip()}"
-        if not suppress_output:
-            print(error_message)
+            error_message += f"\n  optimize.py stderr:\n{e.stderr.strip()}"
         return error_message
+
     except Exception as e:
         error_message = f"Unexpected error processing '{item}': {e}"
-        if not suppress_output:
-            print(error_message)
         return error_message
 
 
@@ -96,62 +91,84 @@ def run(
         )
         sys.exit(1)
 
-    print(f"Input directory: {input_dir}")
-    print(f"Output directory: {output_dir}")
     print(
         f"JPEG quality: {jpg_quality}, WebP quality: {webp_quality}, Lossless: {lossless}, Overwrite: {overwrite}"
     )
-    if max_workers:
-        print(f"Max workers: {max_workers}")
     print("-" * 30)
 
-    tasks = []
-    # Initialize futures_list here to ensure it's always a list
-    futures_list = []
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        for item in os.listdir(input_dir):
-            input_item_path = os.path.join(input_dir, item)
-            if os.path.isfile(input_item_path):
-                file_name, file_extension = os.path.splitext(item)
-                if file_extension.lower() in SUPPORTED_EXTENSIONS:
-                    futures_list.append(
-                        executor.submit(
-                            process_image,
-                            input_item_path,
-                            output_dir,
-                            jpg_quality,
-                            webp_quality,
-                            lossless,
-                            overwrite,
-                            optimize_script_path,
-                            True,  # suppress_output = True
-                        )
-                    )
-                else:
-                    if not futures_list: # Only print if not using progress bar for other files
-                        print(f"Skipping '{item}' (unsupported extension).")
-            else:
-                if not futures_list: # Only print if not using progress bar for other files
-                    print(f"Skipping '{item}' (directory).")
+    success_count = 0
+    failure_count = 0
+    skipped_count = 0
+    
+    futures_map = {} 
+    tasks_to_submit = []
 
-        results_summary = []
-        if futures_list:
-            for future in tqdm(concurrent.futures.as_completed(futures_list), total=len(futures_list), desc="Optimizing images"):
+    for item in os.listdir(input_dir):
+        input_item_path = os.path.join(input_dir, item)
+        if os.path.isfile(input_item_path):
+            _file_name, file_extension = os.path.splitext(item)
+            if file_extension.lower() in SUPPORTED_EXTENSIONS:
+                tasks_to_submit.append((item, input_item_path))
+            else:
+                skipped_count += 1
+        else:
+            skipped_count += 1
+    
+    total_processable_files = len(tasks_to_submit)
+
+    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+        for item, input_item_path in tasks_to_submit:
+            future = executor.submit(
+                process_image,
+                input_item_path,
+                output_dir,
+                jpg_quality,
+                webp_quality,
+                lossless,
+                overwrite,
+                optimize_script_path,
+                True,
+            )
+            futures_map[future] = item
+
+        error_results = []
+        if futures_map:
+            for future in tqdm(concurrent.futures.as_completed(futures_map), total=total_processable_files, desc=None, unit="file"):
+                item_name = futures_map[future] 
                 try:
                     result = future.result()
-                    if result: # Collect results that might contain error messages or important info
-                        results_summary.append(result)
-                except Exception as exc:
-                    # Construct a message similar to what process_image would return for an exception
-                    # This part might need adjustment based on how you want to identify the failing task
-                    item_name = "Unknown item" # Placeholder, ideally get from future if possible
-                    error_msg = f"A task for {item_name} generated an exception: {exc}"
-                    print(error_msg)
-                    results_summary.append(error_msg)
+                    if result: 
+                        failure_count += 1
+                        error_results.append(result)
+                    else: 
+                        success_count += 1
+                except Exception as exc: 
+                    failure_count += 1
+                    error_msg = f"Task for '{item_name}' failed with an unexpected exception: {exc}"
+                    error_results.append(error_msg)
         
-        for summary in results_summary:
-            print(summary)
-            print("-" * 30)
+    print("-" * 30)
+
+    if total_processable_files == 0 and skipped_count == 0:
+        print("No files or items found in the input directory.")
+    else:
+        if total_processable_files > 0:
+            if success_count > 0:
+                print(f"{success_count} file(s) processed successfully.")
+            if failure_count > 0:
+                print(f"{failure_count} file(s) failed.")
+        
+        if skipped_count > 0:
+            if total_processable_files == 0:
+                print(f"{skipped_count} item(s) found and skipped (unsupported or directory).")
+                print("No processable image files found to optimize.")
+            else:
+                print(f"{skipped_count} additional item(s) skipped (unsupported or directory).")
+
+    if error_results:
+        print("\n--- Error Details ---")
+        for error_message in error_results:
+            print(error_message)
 
     print("All tasks completed.")
 
@@ -189,7 +206,7 @@ def main():
             action.help = "Output directory path to save optimized images (default: 'output' folder)"
             action.default = "output"
             break
-
+    
     args = parser.parse_args()
 
     run(
