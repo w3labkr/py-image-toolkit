@@ -42,7 +42,7 @@ def _process_image_item(args):
             if min_face_height is not None:
                 command.extend(["--min-face-height", str(min_face_height)])
             if model_path is not None:
-                command.extend(["--model-path", str(model_path)])
+                command.extend(["--yunet-model-path", str(model_path)])
 
             process = subprocess.run(
                 command,
@@ -207,7 +207,7 @@ def main():
         method=getattr(args, "method", None),
         min_face_width=getattr(args, "min_face_width", None),
         min_face_height=getattr(args, "min_face_height", None),
-        model_path=getattr(args, "model_path", None),
+        model_path=getattr(args, "yunet_model_path", None),
     )
 
 
