@@ -371,7 +371,7 @@ Key Options for `ocr`:
 - `--lang`: OCR language (default: `korean`). Refer to PaddleOCR documentation for supported languages.
 - `--rec_model_dir`: Path to the recognition model directory (default: `./models/ko_PP-OCRv3_rec_infer`).
 - `--det_model_dir`: Path to the detection model directory (default: `./models/ch_PP-OCRv3_det_infer`).
-- `--cls_model_dir`: Path to the direction classification model directory (default: `./models/ch_ppocr_mobile_v2.0_cls_infer`).
+- `--cls_model_dir`: Path to the orientation classification model directory (default: `./models/ch_ppocr_mobile_v2.0_cls_infer`).
 - `--use_gpu`: Whether to use GPU for OCR processing (default: `False`).
 - `--rec_char_dict_path`: Path to recognition character dictionary (default: `None`, uses PaddleOCR default).
 - `--rec_batch_num`: Recognition batch size (default: `6`).
@@ -420,7 +420,7 @@ Key Options for `batch_ocr`:
 - `--lang`: OCR language (default: `korean`). (`ocr.py` default)
 - `--rec_model_dir`: Path to the recognition model directory (default: `./models/ko_PP-OCRv3_rec_infer`). (`ocr.py` default)
 - `--det_model_dir`: Path to the detection model directory (default: `./models/ch_PP-OCRv3_det_infer`). (`ocr.py` default)
-- `--cls_model_dir`: Path to the direction classification model directory (default: `./models/ch_ppocr_mobile_v2.0_cls_infer`). (`ocr.py` default)
+- `--cls_model_dir`: Path to the orientation classification model directory (default: `./models/ch_ppocr_mobile_v2.0_cls_infer`). (`ocr.py` default)
 - `--use_gpu`: Whether to use GPU for OCR processing (default: `False`). (`ocr.py` default)
 - `--rec_char_dict_path`: Path to recognition character dictionary (default: `None`, uses PaddleOCR default). (`ocr.py` default)
 - `--rec_batch_num`: Recognition batch size (default: `6`). (`ocr.py` default)
