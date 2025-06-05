@@ -90,7 +90,7 @@ Each script (`resize.py`, `crop.py`, `ocr.py`, `optimize.py`) and their batch co
 
 - Individual scripts generally take a single `input_file` as an argument.
 - Batch scripts generally take an `input_dir` as an argument to process multiple files.
-- `ocr.py` and `batch_ocr.py` provide CLI options for PaddleOCR configuration, and `--show_log` can be used to display PaddleOCR's internal logs. See the `Optical Character Recognition (OCR)` section below for details.
+- `ocr.py` and `ocrs.py` provide CLI options for PaddleOCR configuration, and `--show_log` can be used to display PaddleOCR's internal logs. See the `Optical Character Recognition (OCR)` section below for details.
 
 ## Graphical User Interface
 
