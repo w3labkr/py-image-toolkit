@@ -381,8 +381,8 @@ Key Options for `ocr`:
 - `--drop_score`: Drop score for text detection (default: `0.6`).
 - `--cls_thresh`: Classification threshold (default: `0.9`).
 - `--use_angle_cls`: Whether to use angle classification (default: `False`).
-- `--use_space_char`: Whether to use space character (default: `True`).
-- `--use_dilation`: Whether to use dilation on text regions (default: `True`).
+- `--use_space_char/--no-use_space_char`: Enable or disable space character support (default: enabled).
+- `--use_dilation/--no-use_dilation`: Enable or disable dilation on text regions (default: enabled).
 - `--show_log`: Whether to display PaddleOCR's internal logs (default: `False`).
 
 Examples for `ocr`:
@@ -430,8 +430,8 @@ Key Options for `batch_ocr`:
 - `--drop_score`: Drop score for text detection (default: `0.6`). (`ocr.py` default)
 - `--cls_thresh`: Classification threshold (default: `0.9`). (`ocr.py` default)
 - `--use_angle_cls`: Whether to use angle classification (default: `False`). (`ocr.py` default)
-- `--use_space_char`: Whether to use space character (default: `True`). (`ocr.py` default)
-- `--use_dilation`: Whether to use dilation on text regions (default: `True`). (`ocr.py` default)
+- `--use_space_char/--no-use_space_char`: Enable or disable space character support (default: enabled). (`ocr.py` default)
+- `--use_dilation/--no-use_dilation`: Enable or disable dilation on text regions (default: enabled). (`ocr.py` default)
 - `--show_log`: Whether to display PaddleOCR's internal logs (default: `False`). (`ocr.py` default)
 
 Examples for `batch_ocr`:

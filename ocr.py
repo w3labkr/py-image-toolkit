@@ -600,13 +600,13 @@ def get_parser():
     )
     paddleocr_group.add_argument(
         "--use_space_char",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
         help="Use space character. Default: True",
     )
     paddleocr_group.add_argument(
         "--use_dilation",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         default=True,
         help="Use dilation on text regions. Default: True",
     )
